@@ -1,3 +1,7 @@
+# Python
+**/__pycache__/
+*.py[cod]
+
 # History files
 .Rhistory
 .Rapp.history
@@ -31,6 +35,13 @@ vignettes/*.pdf
 # knitr and R markdown default cache directories
 *_cache/
 /cache/
+analysis/figure_gc_nlp/
+analysis/general_conference_nlp_report_files/
+analysis/figure_presc_semantic/
+analysis/prescriptive_semantic_trajectory_report_files/
+analysis/data/
+analysis/figure_presc_chunks/
+analysis/prescriptive_chunks_embed_report_files/
 
 # Temporary files created by R markdown
 *.utf8.md

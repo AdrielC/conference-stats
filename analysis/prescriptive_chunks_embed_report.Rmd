@@ -1,0 +1,257 @@
+---
+title: "Prescriptive trajectory — semantic chunks & BGE tf–IDF pooling"
+subtitle: "Regex-mined exemplar poles; FastEmbed-compatible weights; Parquet round-trip"
+author: "conferencestats analysis"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  html_document:
+    theme: cosmo
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    code_folding: show
+    number_sections: true
+    df_print: paged
+    fig_width: 10
+    fig_height: 5.5
+params:
+  repo_root: !r if (nzchar(Sys.getenv("CONFERENCESTATS_ROOT", ""))) Sys.getenv("CONFERENCESTATS_ROOT") else normalizePath("..")
+  # Optional: skip Python if outputs already exist (faster knit)
+  skip_embed_if_present: false
+  py_venv: !r file.path(normalizePath(".."), "analysis", "python", ".venv", "bin", "python")
+  parquet_talks: !r file.path(normalizePath(".."), "analysis", "data", "gc_talks_normalized.parquet")
+  embed_out_dir: !r file.path(normalizePath(".."), "analysis", "data", "gc_chunk_embed")
+  max_chunk_tokens: 220
+  batch_size: 8
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = TRUE,
+  warning = TRUE,
+  fig.path = "figure_presc_chunks/",
+  dpi = 120
+)
+repo_root <- params$repo_root
+if (!dir.exists(file.path(repo_root, "R"))) {
+  stop("params$repo_root must point at the conferencestats package root.")
+}
+```
+
+# What this report does
+
+This is the **Parquet → Python → Parquet → R** pass you asked for:
+
+1. **Every talk** is split into **semantic chunks** with [**semantic-text-splitter**](https://pypi.org/project/semantic-text-splitter/), using the **same HuggingFace tokenizer** as the embedding model and a **token budget** per chunk (`params$max_chunk_tokens`; default ~220 tokens, well inside BGE’s 512 context).
+
+2. **Exemplar poles** are **real sentences from the corpus**: we scan talk text, split into sentence-like spans, and keep strings that match the **same prescriptive vs invitational regex bundles** as `general_conference_nlp_report.Rmd`. If the corpus yields too few hits, the Python script pads with short hand-authored fallbacks (see `gc_chunk_embed_pipeline.py`).
+
+3. **Subword tf×idf weights** are computed on the **chunk collection** (each chunk = one IDF “document”), then **last-layer hidden states** are pooled and L2-normalized (**`analysis/python/hf_tfidf_pool.py`**).
+
+4. The model is **`BAAI/bge-small-en-v1.5`**, the default **FastEmbed** ONNX family. **FastEmbed’s `embed()` API does not expose token vectors**, so **PyTorch Transformers** performs the tf–idf-weighted pooling; weights match the public HF checkpoint FastEmbed wraps.
+
+5. For each chunk: **net = cos(chunk, U_presc) − cos(chunk, U_gentle)** with pole directions **U** = unit-mean of regex-mined (then padded) exemplar embeddings. **Per-talk score** = **mean net across chunks** (equal weight per chunk).
+
+6. Results are **`talk_scores.parquet`** (one row per talk) and **`chunks_scored.parquet`** (diagnostics). This Rmd loads **`talk_scores.parquet`** and fits a **GAM** on year.
+
+```{r branding, echo=FALSE, results='asis'}
+cat(
+  '<blockquote style="border-left:4px solid #2c5282;padding-left:1em;color:#2d3748;">',
+  "Corpus: <code>generalconference::genconf</code> via <code>gc_normalize_talks()</code>. ",
+  "Chunking: semantic-text-splitter + BGE tokenizer. ",
+  "Embeddings: BGE-small + tf–idf-weighted pooling (HF). ",
+  "</blockquote>"
+)
+```
+
+---
+
+# Prerequisites
+
+**R**
+
+```r
+install.packages(c("pkgload", "dplyr", "ggplot2", "mgcv", "nanoparquet",
+  "rmarkdown", "knitr", "remotes"))
+remotes::install_github("bryanwhiting/generalconference@v0.3.2")
+```
+
+**Python (3.10+ recommended)** — create a venv under `analysis/python/` and install:
+
+```bash
+cd analysis/python
+python3.11 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements-gc-embed.txt
+```
+
+Optional: `python gc_chunk_embed_pipeline.py --fastembed-smoke` checks that **FastEmbed** loads; encoding still uses **Transformers** for pooling.
+
+---
+
+# Step 1 — Export talks to Parquet
+
+```{r export-parquet}
+library(dplyr)
+pkgload::load_all(repo_root, quiet = TRUE)
+
+if (!requireNamespace("generalconference", quietly = TRUE)) {
+  stop("Install generalconference v0.3.2 (see Prerequisites).")
+}
+if (!requireNamespace("nanoparquet", quietly = TRUE)) {
+  stop("Install nanoparquet.")
+}
+
+dir.create(dirname(params$parquet_talks), recursive = TRUE, showWarnings = FALSE)
+talks <- gc_normalize_talks(gc_as_tibble_generalconference())
+export_tbl <- talks |> dplyr::select(talk_id, year, month, speaker, title, text)
+nanoparquet::write_parquet(export_tbl, params$parquet_talks)
+knitr::kable(
+  utils::head(as.data.frame(export_tbl), 2),
+  caption = "Exported columns (text truncated in viewer)"
+)
+message("Wrote ", nrow(export_tbl), " talks → ", params$parquet_talks)
+```
+
+# Step 2 — Chunk + embed (Python)
+
+```{r run-python-pipeline}
+talk_parquet <- normalizePath(params$parquet_talks, mustWork = TRUE)
+out_dir <- normalizePath(params$embed_out_dir, mustWork = FALSE)
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+chunk_parquet <- file.path(out_dir, "chunks_scored.parquet")
+talk_score_parquet <- file.path(out_dir, "talk_scores.parquet")
+
+run_py <- !isTRUE(params$skip_embed_if_present) ||
+  !file.exists(chunk_parquet) ||
+  !file.exists(talk_score_parquet)
+
+py <- params$py_venv
+if (!nzchar(py) || !file.exists(py)) {
+  py <- Sys.which("python3")
+}
+if (!nzchar(py)) {
+  stop("No Python interpreter found; set params$py_venv to venv python.")
+}
+
+pipeline_py <- normalizePath(file.path(repo_root, "analysis", "python", "gc_chunk_embed_pipeline.py"))
+if (run_py) {
+  args <- c(
+    pipeline_py,
+    "--input", talk_parquet,
+    "--output-dir", out_dir,
+    "--max-chunk-tokens", as.character(as.integer(params$max_chunk_tokens)),
+    "--batch-size", as.character(as.integer(params$batch_size))
+  )
+  message("Running: ", py, " ", paste(args, collapse = " "))
+  log <- system2(py, args, stdout = TRUE, stderr = TRUE)
+  exit_c <- attr(log, "status")
+  if (!is.null(exit_c) && exit_c != 0L) {
+    stop("Python pipeline failed (exit ", exit_c, "):\n", paste(log, collapse = "\n"))
+  }
+  message(paste(log, collapse = "\n"))
+} else {
+  message("Skipping Python (outputs already present).")
+}
+```
+
+# Step 3 — Load scores & model trend
+
+```{r load-scores}
+library(mgcv)
+talk_sc <- nanoparquet::read_parquet(talk_score_parquet)
+talk_sc <- talk_sc |>
+  dplyr::filter(!is.na(.data$year), !is.na(.data$mean_net_presc)) |>
+  dplyr::mutate(year = as.integer(.data$year))
+
+knitr::kable(
+  utils::head(as.data.frame(talk_sc), 5),
+  caption = "Per-talk aggregate (mean net cosine across semantic chunks)"
+)
+
+m_net <- mgcv::gam(mean_net_presc ~ s(year, k = 12), data = talk_sc, method = "REML")
+```
+
+```{r plot-year, fig.cap="Talk-level mean net score vs year (semantic chunks, regex-mined exemplar poles)."}
+library(ggplot2)
+ggplot(talk_sc, aes(.data$year, .data$mean_net_presc)) +
+  geom_hline(yintercept = 0, linetype = 3, alpha = 0.5) +
+  geom_point(aes(size = .data$n_chunks), alpha = 0.15, color = "#1a365d") +
+  geom_smooth(method = "gam", formula = y ~ s(x, k = 12), color = "#c53030", fill = "#c5303033") +
+  scale_size(range = c(0.3, 3), guide = "none") +
+  labs(
+    title = "Prescriptive vs invitational embedding drift (chunked talks)",
+    subtitle = "BGE-small, tf–idf-weighted pool; poles = corpus regex exemplars",
+    x = "Conference year",
+    y = "Mean chunk net (cos presc − cos gentle)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"), panel.grid.minor = element_blank())
+```
+
+```{r plot-decade, fig.cap="Decadal means ± SE."}
+by_dec <- talk_sc |>
+  dplyr::mutate(decade = floor(.data$year / 10) * 10) |>
+  dplyr::group_by(.data$decade) |>
+  dplyr::summarise(
+    n = dplyr::n(),
+    m = mean(.data$mean_net_presc),
+    se = stats::sd(.data$mean_net_presc) / sqrt(dplyr::n()),
+    .groups = "drop"
+  )
+
+ggplot(by_dec, aes(.data$decade, .data$m)) +
+  ggplot2::geom_ribbon(aes(ymin = .data$m - .data$se, ymax = .data$m + .data$se), alpha = 0.25, fill = "#2b6cb0") +
+  geom_line(color = "#2c5282", linewidth = 0.9) +
+  geom_point(size = 2.5, color = "#1a365d") +
+  geom_hline(yintercept = 0, linetype = 2, alpha = 0.5) +
+  labs(title = "Decadal means (chunk-based pipeline)", x = "Decade", y = "Mean net cosine ± SE") +
+  theme_minimal(base_size = 13)
+```
+
+```{r gam-note, echo=FALSE, results='asis'}
+cat(
+  "<p><strong>GAM</strong> <code>mean_net_presc ~ s(year)</code>: edf ≈ ",
+  format(sum(m_net$edf[-1]), digits = 2),
+  ", approximate <em>p</em> = ",
+  format.pval(summary(m_net)$s.table[1, 4], digits = 4),
+  ".</p>"
+)
+```
+
+```{r interpret-tails, echo=FALSE, results='asis'}
+grid_y <- seq(min(talk_sc$year), max(talk_sc$year), length.out = 400)
+pdat <- data.frame(year = grid_y)
+pdat$fit <- as.numeric(predict(m_net, newdata = pdat))
+qlo <- stats::quantile(talk_sc$year, 0.1)
+qhi <- stats::quantile(talk_sc$year, 0.9)
+early <- mean(pdat$fit[pdat$year <= qlo])
+late <- mean(pdat$fit[pdat$year >= qhi])
+delta <- late - early
+cat(
+  "<p><strong>Smoothed tail comparison:</strong> later minus earlier (10% year quantiles) = ",
+  "<strong>", format(delta, digits = 3), "</strong>. ",
+  "Negative ⇒ average chunk semantics move toward the <em>invitational</em> pole relative to the <em>prescriptive</em> pole on this construction.</p>"
+)
+```
+
+---
+
+# Reproducibility
+
+```{r meta, echo=FALSE, results='asis'}
+meta_j <- file.path(out_dir, "pipeline_meta.json")
+if (file.exists(meta_j)) {
+  cat("<pre>\n", paste(readLines(meta_j, warn = FALSE), collapse = "\n"), "\n</pre>\n", sep = "")
+}
+```
+
+```{r sessioninfo}
+sessionInfo()
+```

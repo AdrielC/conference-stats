@@ -1,0 +1,449 @@
+---
+title: "General Conference NLP Report"
+subtitle: "MiniLM (+ optional subword TF–IDF pooling) & LDA across the full corpus"
+author: "conferencestats analysis"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  html_document:
+    theme: cosmo
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    code_folding: show
+    number_sections: true
+    df_print: paged
+    fig_width: 10
+    fig_height: 5.5
+params:
+  repo_root: !r if (nzchar(Sys.getenv("CONFERENCESTATS_ROOT", ""))) Sys.getenv("CONFERENCESTATS_ROOT") else normalizePath("..")
+  lda_k: 16
+  minilm_batch_size: 48
+  # When TRUE: last-layer hidden states are pooled with weights ∝ subword tf×idf (same tokenizer as MiniLM).
+  use_subword_tfidf_pool: true
+  minilm_max_length: 256
+  tfidf_pool_batch_size: 8
+  max_paragraph_rows: null
+  min_paragraph_chars: 40
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = TRUE,
+  warning = TRUE,
+  fig.path = "figure_gc_nlp/",
+  dpi = 120
+)
+repo_root <- params$repo_root
+if (!dir.exists(file.path(repo_root, "R"))) {
+  stop("params$repo_root must point at the conferencestats package root.")
+}
+```
+
+# Executive summary
+
+This report uses **`sentence-transformers/all-MiniLM-L6-v2`** (384-d, same WordPiece tokenizer as the stock encoder) via **`reticulate`**, on **every paragraph** aligned to **`generalconference`**, to track **prescriptive vs invitational** semantic poles from regex-mined prototypes. With **`params$use_subword_tfidf_pool: true`** (default), paragraph vectors come from **last-layer subword positions weighted by normalized tf×idf** on token IDs (then L2-normalized)—not the library’s default mean pooling. It then fits **LDA** on **every talk** and plots **topic prevalence over year**.
+
+> **Note:** Use **raw paragraph strings**. Optional `params$use_subword_tfidf_pool: false` restores plain **`SentenceTransformer.encode()`** mean pooling (requires `sentence_transformers`).
+
+```{r branding, echo=FALSE, results='asis'}
+cat(
+  '<blockquote style="border-left:4px solid #2c5282;padding-left:1em;color:#2d3748;">',
+  "<strong>Corpus:</strong> <code>generalconference::genconf</code> (flattened). ",
+  "<br/><strong>MiniLM:</strong> ",
+  '<a href="https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2">all-MiniLM-L6-v2</a>.',
+  "</blockquote>"
+)
+```
+
+# Prerequisites
+
+Install once (R):
+
+```r
+install.packages(c(
+  "pkgload", "rmarkdown", "knitr", "reticulate", "dplyr", "tidyr",
+  "stringr", "purrr", "ggplot2", "scales", "mgcv", "quanteda",
+  "topicmodels", "tibble", "remotes", "rprojroot"
+))
+remotes::install_github("bryanwhiting/generalconference@v0.3.2")
+```
+
+Python (CPU is fine; first run downloads the model from HuggingFace):
+
+```{r py-bootstrap, eval=FALSE}
+reticulate::miniconda_install() # optional if you want an isolated Python
+reticulate::py_install(
+  c("transformers", "sentence-transformers", "torch", "numpy"),
+  pip = TRUE
+)
+```
+
+```{r py-ensure}
+library(reticulate)
+use_pool <- isTRUE(params$use_subword_tfidf_pool)
+have_st <- tryCatch(
+  {
+    import("sentence_transformers")
+    TRUE
+  },
+  error = function(e) FALSE
+)
+have_tf <- tryCatch(
+  {
+    import("transformers")
+    TRUE
+  },
+  error = function(e) FALSE
+)
+if (use_pool) {
+  if (!have_tf) {
+    message("Installing transformers + torch via pip (one-time, can take several minutes)...")
+    py_install(c("transformers", "torch"), pip = TRUE)
+  }
+} else if (!have_st) {
+  message("Installing sentence-transformers + torch via pip (one-time, can take several minutes)...")
+  py_install(c("sentence-transformers", "torch"), pip = TRUE)
+}
+```
+
+# Load package and full talk table
+
+```{r load-pkg}
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(purrr)
+library(ggplot2)
+library(scales)
+library(mgcv)
+library(quanteda)
+library(topicmodels)
+library(tibble)
+pkgload::load_all(repo_root, quiet = TRUE)
+
+if (!requireNamespace("generalconference", quietly = TRUE)) {
+  stop("Install generalconference v0.3.2 (see Prerequisites).")
+}
+
+talks <- gc_normalize_talks(gc_as_tibble_generalconference())
+stopifnot(nrow(talks) > 100L)
+
+talks_summary <- talks |>
+  summarise(
+    n_talks = dplyr::n(),
+    year_min = min(year, na.rm = TRUE),
+    year_max = max(year, na.rm = TRUE),
+    n_words = sum(word_count, na.rm = TRUE)
+  )
+knitr::kable(talks_summary, caption = "Full corpus summary")
+```
+
+# Part A — Paragraphs & MiniLM embeddings
+
+## Build paragraph table
+
+```{r paragraphs}
+para <- gc_as_paragraph_tibble_generalconference() |>
+  inner_join(
+    talks |>
+      select(talk_id, year, month, conference_date, speaker, title, url, word_count),
+    by = c("year", "month", "speaker", "title", "url")
+  ) |>
+  filter(nchar(.data$text) >= params$min_paragraph_chars)
+
+if (!is.null(params$max_paragraph_rows) && is.numeric(params$max_paragraph_rows) &&
+  params$max_paragraph_rows > 0L) {
+  set.seed(42)
+  para <- dplyr::slice_sample(para, n = min(nrow(para), as.integer(params$max_paragraph_rows)))
+}
+
+knitr::kable(
+  utils::head(as.data.frame(para), 4),
+  caption = "Sample paragraph rows"
+)
+message("Paragraphs for MiniLM: ", nrow(para))
+```
+
+## Regex-mined prototype spans (same spirit as prior analysis)
+
+```{r regex-bundles}
+presc_rx <- regex(
+  paste(
+    "do\\s+not",
+    "don'?t",
+    "can\\s+not",
+    "cannot",
+    "must\\s+not",
+    "should\\s+not",
+    "ought\\s+not",
+    "thou\\s+shalt\\s+not",
+    "shall\\s+not",
+    "never\\s+\\w+",
+    "cease\\s+(from|to)",
+    "beware",
+    "wo\\s*(e)?\\s*unto",
+    "woe\\s+unto",
+    "condemn",
+    "rebellion\\s+against",
+    "must\\s+stop",
+    sep = "|"
+  ),
+  ignore_case = TRUE
+)
+
+gentle_rx <- regex(
+  paste(
+    "i invite",
+    "we invite",
+    "invitation",
+    "come\\s+unto\\s+christ",
+    "jesus\\s+christ",
+    "our\\s+savior",
+    "redeemer",
+    "his\\s+love",
+    "peace\\s+in\\s+christ",
+    "gentle",
+    "tender",
+    "mercies",
+    "consider\\s+how",
+    "ponder",
+    sep = "|"
+  ),
+  ignore_case = TRUE
+)
+
+para <- para |>
+  mutate(
+    has_presc = str_detect(.data$text, presc_rx),
+    has_gentle = str_detect(.data$text, gentle_rx)
+  )
+```
+
+## Encode all paragraphs with MiniLM
+
+```{r minilm-encode}
+py_dir <- normalizePath(file.path(repo_root, "analysis", "python"))
+sys <- reticulate::import("sys", convert = FALSE)
+sys$path$insert(0L, py_dir)
+txt <- as.character(para$text)
+
+if (isTRUE(params$use_subword_tfidf_pool)) {
+  stw <- reticulate::import("st_minilm_tfidf_pool", convert = TRUE)
+  ml <- as.integer(params$minilm_max_length)
+  tbs <- params$tfidf_pool_batch_size
+  bs_pool <- if (is.numeric(tbs) && length(tbs) == 1L && !is.na(tbs) && tbs > 0) {
+    as.integer(tbs)
+  } else {
+    as.integer(min(16L, params$minilm_batch_size))
+  }
+  idf <- stw$compute_subword_idf(txt, max_length = ml)
+  emb <- stw$encode_tfidf_weighted_pool(txt, idf, max_length = ml, batch_size = bs_pool)
+  mod <- stw
+} else {
+  st <- reticulate::import("st_minilm", convert = TRUE)
+  emb <- st$encode_texts(txt, batch_size = as.integer(params$minilm_batch_size))
+  mod <- st
+}
+
+stopifnot(is.matrix(emb), nrow(emb) == nrow(para), ncol(emb) == 384L)
+
+u_presc <- mod$centroid_unit(emb, para$has_presc)
+u_gent <- mod$centroid_unit(emb, para$has_gentle)
+if (is.null(u_presc) || is.null(u_gent)) {
+  stop("Could not build MiniLM prototypes — broaden regex or corpus.")
+}
+
+cos_p <- as.numeric(mod$cosine_to_rows(emb, u_presc))
+cos_g <- as.numeric(mod$cosine_to_rows(emb, u_gent))
+
+para_scored <- para |>
+  mutate(
+    cos_presc = cos_p,
+    cos_gentle = cos_g,
+    net_presc = .data$cos_presc - .data$cos_gentle
+  )
+```
+
+## Talk- and year-level aggregation + plots
+
+```{r minilm-aggregates}
+talk_sc <- para_scored |>
+  group_by(talk_id, year, month, conference_date, speaker) |>
+  summarise(
+    n_para = dplyr::n(),
+    mean_net = mean(.data$net_presc, na.rm = TRUE),
+    q75_net = quantile(.data$net_presc, 0.75, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+m_net <- mgcv::gam(mean_net ~ s(year), data = talk_sc, method = "REML")
+```
+
+```{r plot-minilm-year, fig.cap="**MiniLM:** distribution of talk-level mean (cos prescriptive prot. − cos gentle prot.) by year. Trend = GAM smooth."}
+ggplot(talk_sc, aes(year, mean_net)) +
+  geom_hline(yintercept = 0, linetype = 3, alpha = 0.5) +
+  geom_point(aes(size = n_para), alpha = 0.12, color = "#1a365d") +
+  geom_smooth(method = "gam", formula = y ~ s(x, k = 12), color = "#c53030", fill = "#c5303033") +
+  scale_size(range = c(0.4, 3), guide = "none") +
+  labs(
+    title = expression(bold("MiniLM") ~ "prescriptive vs. gentle prototype (full paragraph corpus)"),
+    subtitle = "Per talk: mean paragraph-level net semantic alignment | sentence-transformers/all-MiniLM-L6-v2",
+    x = "Conference year",
+    y = "Mean net cosine (prescriptive − gentle)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+```{r plot-minilm-decade, fig.cap="Decadal means with standard error."}
+by_dec <- talk_sc |>
+  mutate(decade = floor(year / 10) * 10) |>
+  group_by(decade) |>
+  summarise(
+    n = dplyr::n(),
+    m = mean(mean_net),
+    se = sd(mean_net) / sqrt(dplyr::n()),
+    .groups = "drop"
+  )
+
+ggplot(by_dec, aes(decade, m)) +
+  geom_ribbon(aes(ymin = m - se, ymax = m + se), alpha = 0.25, fill = "#2b6cb0") +
+  geom_line(color = "#2c5282", linewidth = 0.9) +
+  geom_point(size = 2.5, color = "#1a365d") +
+  geom_hline(yintercept = 0, linetype = 2, alpha = 0.5) +
+  labs(
+    title = "Decadal compression of the MiniLM prescriptive index",
+    x = "Decade",
+    y = "Mean net cosine ± SE"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+```{r minilm-gam-note, echo=FALSE, results='asis'}
+cat(
+  "<p><strong>GAM</strong> <code>mean_net ~ s(year)</code>: edf = ",
+  format(sum(m_net$edf[-1]), digits = 2),
+  ", approximate p-value = ",
+  format.pval(summary(m_net)$s.table[1, 4], digits = 3),
+  ".</p>"
+)
+```
+
+# Part B — LDA on **every talk**
+
+```{r lda-corpus}
+corp_lda <- corpus(
+  talks,
+  text_field = "text",
+  docid_field = "talk_id"
+)
+
+toks_lda <- tokens(corp_lda, remove_punct = TRUE, remove_numbers = FALSE) |>
+  tokens_remove(stopwords("en")) |>
+  tokens_wordstem(language = "en")
+
+dfm_lda <- dfm(toks_lda) |>
+  dfm_trim(
+    min_docfreq = 5,
+    max_docfreq = 0.5,
+    docfreq_type = "prop"
+  )
+
+message("LDA DFM: ", quanteda::ndoc(dfm_lda), " docs × ", quanteda::nfeat(dfm_lda), " feats")
+```
+
+```{r lda-fit}
+set.seed(42)
+dtm <- convert(dfm_lda, to = "topicmodels")
+lda <- LDA(dtm, k = as.integer(params$lda_k), control = list(seed = 42, verbose = 0))
+gamma <- posterior(lda)$topics
+ colnames(gamma) <- paste0("topic_", seq_len(ncol(gamma)))
+
+tt <- topicmodels::terms(lda, 12)
+## tt: rows = ranked terms, cols = topics — transpose so each row is one topic
+top_terms <- as.data.frame(t(tt), stringsAsFactors = FALSE)
+colnames(top_terms) <- paste0("w", seq_len(ncol(top_terms)))
+top_terms <- dplyr::bind_cols(
+  topic = paste0("topic_", seq_len(nrow(top_terms))),
+  top_terms
+)
+knitr::kable(
+  utils::head(top_terms, 8),
+  caption = "Top stemmed tokens per topic (one row per topic; columns are ranked terms)"
+)
+```
+
+```{r lda-year-panel}
+doc_ids <- docnames(dfm_lda)
+## dfm_trim drops empty documents; row order of gamma matches doc_ids
+if (!all(doc_ids %in% talks$talk_id)) {
+  stop("LDA docnames missing from talks — check corpus alignment.")
+}
+
+gamma_df <- as_tibble(gamma) |>
+  mutate(talk_id = doc_ids) |>
+  left_join(talks |> select(talk_id, year), by = "talk_id") |>
+  filter(!is.na(.data$year))
+
+year_topic <- gamma_df |>
+  pivot_longer(starts_with("topic_"), names_to = "topic", values_to = "gamma") |>
+  group_by(year, topic) |>
+  summarise(mean_gamma = mean(gamma, na.rm = TRUE), .groups = "drop")
+```
+
+```{r plot-lda-faceted, fig.height=10, fig.cap="**LDA:** mean posterior topic proportion per calendar year (each panel is one topic)."}
+ggplot(year_topic, aes(year, mean_gamma)) +
+  geom_area(fill = "#718096", alpha = 0.35) +
+  geom_line(color = "#2d3748", linewidth = 0.35) +
+  facet_wrap(~topic, ncol = 4, scales = "free_y") +
+  labs(
+    title = "LDA topic prevalence over time (full General Conference talk corpus)",
+    subtitle = paste0("K = ", params$lda_k, " | documents = all normalized talks in genconf"),
+    x = NULL,
+    y = "Mean gamma (topic proportion)"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    strip.text = element_text(face = "bold", size = 9),
+    panel.grid.minor = element_blank()
+  )
+```
+
+```{r plot-lda-heatmap, fig.height=7, fig.cap="Heatmap of z-scored yearly topic means (structure over eras)."}
+zt <- year_topic |>
+  group_by(topic) |>
+  mutate(z = as.numeric(scale(mean_gamma))) |>
+  ungroup()
+
+ggplot(zt, aes(year, topic, fill = z)) +
+  geom_tile(color = "white", linewidth = 0.08) +
+  scale_fill_gradient2(
+    low = "#1e3a5f", mid = "#f7fafc", high = "#9b2c2c",
+    midpoint = 0, name = "z-score"
+  ) +
+  labs(
+    title = "Topic footprint across years (z-scored mean gamma)",
+    x = "Year",
+    y = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.y = element_text(size = 8)
+  )
+```
+
+# Reproducibility
+
+```{r sessioninfo}
+sessionInfo()
+reticulate::py_config()
+```

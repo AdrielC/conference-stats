@@ -1,0 +1,10 @@
+# Chunk + tf–idf pooling pipeline (BGE-small; semantic-text-splitter; optional FastEmbed)
+transformers>=4.36
+torch
+numpy
+tokenizers>=0.15
+semantic-text-splitter>=0.20
+pyarrow>=14
+pandas>=2.0
+fastembed>=0.4
+tqdm>=4.66

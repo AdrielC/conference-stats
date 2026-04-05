@@ -1,0 +1,402 @@
+---
+title: "Prescriptive vs. invitational language in General Conference"
+subtitle: "Semantic trajectory using exemplar poles & subword TF–IDF–weighted MiniLM pooling"
+author: "conferencestats analysis"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  html_document:
+    theme: cosmo
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    code_folding: show
+    number_sections: true
+    df_print: paged
+    fig_width: 10
+    fig_height: 5.5
+params:
+  repo_root: !r if (nzchar(Sys.getenv("CONFERENCESTATS_ROOT", ""))) Sys.getenv("CONFERENCESTATS_ROOT") else normalizePath("..")
+  minilm_max_length: 256
+  tfidf_pool_batch_size: 8
+  max_paragraph_rows: null
+  min_paragraph_chars: 40
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = TRUE,
+  warning = TRUE,
+  fig.path = "figure_presc_semantic/",
+  dpi = 120
+)
+repo_root <- params$repo_root
+if (!dir.exists(file.path(repo_root, "R"))) {
+  stop("params$repo_root must point at the conferencestats package root.")
+}
+```
+
+# Executive summary
+
+This report estimates whether **General Conference** rhetoric (paragraph-level) has moved toward **prescriptive / mandatory** language or toward **invitational / gentle** language over time.
+
+**Semantic poles** are **not** mined from the corpus with regular expressions. Instead, we **hand-pick short exemplar sentences** that try to capture (a) declarative, commandment-style, warning-style teaching and (b) Christ-centered invitation, tenderness, and reflection—then average their embedding directions into two **unit reference directions** in MiniLM space.
+
+Every **paragraph** is encoded with **`sentence-transformers/all-MiniLM-L6-v2`** using **last-layer subword pooling** whose position weights are proportional to **subword tf×idf** on the model tokenizer (same setup as `analysis/python/st_minilm_tfidf_pool.py`, IDF fit on the **paragraph corpus** so scoring stays anchored to conference language).
+
+For each paragraph we compute
+
+> **net semantic prescriptiveness** = cos(paragraph, pole_prescriptive) − cos(paragraph, pole_invitational)
+
+and aggregate to **per-talk** means, then smooth **against conference year** with a **GAM**.
+
+**How to read the rest:** Methods spell out exemplars and pooling; Results give plots and tables; **Interpretation** states the directional answer (including whether recent years might tilt slightly back toward prescriptive language if the curve is non-monotone).
+
+```{r branding, echo=FALSE, results='asis'}
+cat(
+  '<blockquote style="border-left:4px solid #2c5282;padding-left:1em;color:#2d3748;">',
+  "<strong>Corpus:</strong> <code>generalconference::genconf</code> (paragraph rows joined to normalized talks). ",
+  "<br/><strong>Model & pooling:</strong> ",
+  '<a href="https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2">all-MiniLM-L6-v2</a>',
+  " + tf–idf-weighted subword pool.",
+  "</blockquote>"
+)
+```
+
+---
+
+# Prerequisites
+
+**R** (once):
+
+```r
+install.packages(c(
+  "pkgload", "rmarkdown", "knitr", "reticulate", "dplyr", "tidyr",
+  "stringr", "ggplot2", "scales", "mgcv", "tibble", "remotes"
+))
+remotes::install_github("bryanwhiting/generalconference@v0.3.2")
+```
+
+**Python** (CPU or GPU; first run downloads weights):
+
+```{r py-bootstrap, eval=FALSE}
+reticulate::py_install(c("transformers", "torch", "numpy"), pip = TRUE)
+```
+
+```{r py-ensure}
+library(reticulate)
+have_tf <- tryCatch({ import("transformers"); TRUE }, error = function(e) FALSE)
+if (!have_tf) {
+  message("Installing transformers + torch via pip (one-time, can take several minutes)...")
+  py_install(c("transformers", "torch"), pip = TRUE)
+}
+```
+
+---
+
+# Data: talks and paragraphs
+
+```{r load-pkg}
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(scales)
+library(mgcv)
+library(tibble)
+pkgload::load_all(repo_root, quiet = TRUE)
+
+if (!requireNamespace("generalconference", quietly = TRUE)) {
+  stop("Install generalconference v0.3.2 (see Prerequisites).")
+}
+
+talks <- gc_normalize_talks(gc_as_tibble_generalconference())
+stopifnot(nrow(talks) > 100L)
+
+talks |> 
+  summarise(
+    n_talks = dplyr::n(),
+    year_min = min(year, na.rm = TRUE),
+    year_max = max(year, na.rm = TRUE),
+    n_words = sum(word_count, na.rm = TRUE)
+  ) |>
+  knitr::kable(caption = "Corpus coverage")
+```
+
+```{r paragraphs}
+para <- gc_as_paragraph_tibble_generalconference() |>
+  inner_join(
+    talks |>
+      select(talk_id, year, month, conference_date, speaker, title, url, word_count),
+    by = c("year", "month", "speaker", "title", "url")
+  ) |>
+  filter(nchar(.data$text) >= params$min_paragraph_chars)
+
+if (!is.null(params$max_paragraph_rows) && is.numeric(params$max_paragraph_rows) &&
+  params$max_paragraph_rows > 0L) {
+  set.seed(42)
+  para <- dplyr::slice_sample(para, n = min(nrow(para), as.integer(params$max_paragraph_rows)))
+}
+
+knitr::kable(
+  utils::head(as.data.frame(para), 3),
+  caption = "Sample paragraph rows (text truncated in viewer)"
+)
+message("Paragraphs encoded: ", nrow(para))
+```
+
+---
+
+# Methods
+
+## Exemplar poles (hand-authored)
+
+The lists below are **deliberate prototypes**, not corpus-derived. You should edit them to match your research intent. Two sentences mirror prompts you gave for “prescriptive / doctrinal statement” flavor; spelling (“Malachy”) is kept in one exemplar as in the prompt, and a parallel line uses “Malachi” for a cleaner tokenization.
+
+```{r exemplars, echo=TRUE}
+exemplar_prescriptive <- c(
+  "I should put priesthood keys of the seeming power upon Peter, James and John.",
+  "It is also significant that when Christ visited the people on the American continent he specifically recited to them the Old Testament account in Malachy.",
+  "It is also significant that when Christ visited the people on the American continent he specifically recited to them the Old Testament account in Malachi.",
+  "Thou shalt have no other gods before me.",
+  "Thou shalt not commit adultery.",
+  "Repent ye, for the kingdom of heaven is at hand.",
+  "Ye must press forward with a steadfastness in Christ.",
+  "Do not procrastinate the day of your repentance.",
+  "Beware of pride, for it will destroy your soul.",
+  "Woe unto him who rebels against the Lord.",
+  "Cease from all ungodliness and forsake your sins."
+)
+
+exemplar_invitational <- c(
+  "I invite you to come unto Christ and be healed.",
+  "We extend a heartfelt invitation to each of you to feel His redeeming love.",
+  "Ponder the tender mercies the Lord has shown you.",
+  "Consider how gentle the Savior is with His children.",
+  "His mercy and peace rest upon all who turn to Him.",
+  "We invite you to receive the peace that only He can give.",
+  "Jesus Christ is our Savior; yield your heart to Him in love.",
+  "As we invite the Spirit, our hearts are softened.",
+  "Treasure up these words and let them nourish your faith.",
+  "Come unto Christ, and lay your burdens at His feet."
+)
+
+tibble::tibble(side = "prescriptive", text = exemplar_prescriptive) |>
+  bind_rows(tibble::tibble(side = "invitational", text = exemplar_invitational)) |>
+  knitr::kable(caption = "Exemplar strings defining the two poles")
+```
+
+## Subword tf–idf pooling (MiniLM)
+
+1. **IDF** is computed over **paragraph strings only** (each paragraph = one “document” for df). Token ids appearing in CLS/SEP/PAD/UNK are excluded from df updates, matching `compute_subword_idf`.
+2. Each span (paragraph or exemplar) is run through **`AutoModel` last hidden states**.
+3. For each non-special subword position \(j\) with type \(t_j\), weight \(w_j \propto \text{tf}(t_j)\cdot \text{idf}(t_j)\) within that span, normalized to sum to 1.
+4. Pooled vector = \(\sum_j w_j h_j\), then **L2-normalized**.
+5. **Pole vectors**: encode all exemplar strings with the **same** paragraph IDF; take the **mean** of exemplar rows and L2-normalize (`unit_mean_direction` in Python).
+
+```{r connect-python}
+py_dir <- normalizePath(file.path(repo_root, "analysis", "python"))
+sys <- reticulate::import("sys", convert = FALSE)
+sys$path$insert(0L, py_dir)
+stw <- reticulate::import("st_minilm_tfidf_pool", convert = TRUE)
+
+ml <- as.integer(params$minilm_max_length)
+tbs <- params$tfidf_pool_batch_size
+bs_pool <- if (is.numeric(tbs) && length(tbs) == 1L && !is.na(tbs) && tbs > 0) {
+  as.integer(tbs)
+} else {
+  8L
+}
+
+txt <- as.character(para$text)
+message("Fitting subword IDF on ", length(txt), " paragraphs...")
+idf <- stw$compute_subword_idf(txt, max_length = ml)
+
+message("Encoding paragraphs (tf–idf pool)...")
+emb <- stw$encode_tfidf_weighted_pool(txt, idf, max_length = ml, batch_size = bs_pool)
+stopifnot(is.matrix(emb), nrow(emb) == nrow(para), ncol(emb) == 384L)
+
+all_ex <- c(exemplar_prescriptive, exemplar_invitational)
+message("Encoding exemplars...")
+emb_ex <- stw$encode_tfidf_weighted_pool(all_ex, idf, max_length = ml, batch_size = bs_pool)
+np <- length(exemplar_prescriptive)
+ng <- length(exemplar_invitational)
+
+u_presc <- stw$unit_mean_direction(emb_ex[seq_len(np), , drop = FALSE])
+u_gent <- stw$unit_mean_direction(emb_ex[np + seq_len(ng), , drop = FALSE])
+if (is.null(u_presc) || is.null(u_gent)) {
+  stop("Exemplar centroid failed — check exemplar_prescriptive / exemplar_invitational.")
+}
+
+cos_p <- as.numeric(stw$cosine_to_rows(emb, u_presc))
+cos_g <- as.numeric(stw$cosine_to_rows(emb, u_gent))
+
+para_scored <- para |>
+  dplyr::mutate(
+    cos_presc = cos_p,
+    cos_gentle = cos_g,
+    net_presc = .data$cos_presc - .data$cos_gentle
+  )
+```
+
+---
+
+# Results
+
+## Talk-level scores and smooth trend
+
+```{r aggregates}
+talk_sc <- para_scored |>
+  group_by(talk_id, year, month, conference_date, speaker) |>
+  summarise(
+    n_para = dplyr::n(),
+    mean_net = mean(.data$net_presc, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+m_net <- mgcv::gam(mean_net ~ s(year, k = 12), data = talk_sc, method = "REML")
+```
+
+```{r plot-year, fig.cap="Each talk: mean paragraph net score (prescriptive pole minus invitational pole). Points sized by paragraph count; red curve = GAM smooth."}
+ggplot(talk_sc, aes(year, mean_net)) +
+  geom_hline(yintercept = 0, linetype = 3, alpha = 0.5) +
+  geom_point(aes(size = n_para), alpha = 0.12, color = "#1a365d") +
+  geom_smooth(method = "gam", formula = y ~ s(x, k = 12), color = "#c53030", fill = "#c5303033") +
+  scale_size(range = c(0.4, 3), guide = "none") +
+  labs(
+    title = "Semantic prescriptiveness over conference years",
+    subtitle = "Exemplar-defined poles | tf–idf weighted MiniLM pooling | mean net cosine per talk",
+    x = "Conference year",
+    y = "Mean (cos prescriptive − cos invitational)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+```{r plot-decade, fig.cap="Decadal means of talk-level net score (error bars = standard error of the mean)."}
+by_dec <- talk_sc |>
+  mutate(decade = floor(year / 10) * 10) |>
+  group_by(decade) |>
+  summarise(
+    n = dplyr::n(),
+    m = mean(mean_net),
+    se = sd(mean_net) / sqrt(dplyr::n()),
+    .groups = "drop"
+  )
+
+ggplot(by_dec, aes(decade, m)) +
+  geom_ribbon(aes(ymin = m - se, ymax = m + se), alpha = 0.25, fill = "#2b6cb0") +
+  geom_line(color = "#2c5282", linewidth = 0.9) +
+  geom_point(size = 2.5, color = "#1a365d") +
+  geom_hline(yintercept = 0, linetype = 2, alpha = 0.5) +
+  labs(
+    title = "Decadal averages (exemplar poles)",
+    x = "Decade",
+    y = "Mean net cosine ± SE"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+```{r gam-note, echo=FALSE, results='asis'}
+cat(
+  "<p><strong>GAM</strong> <code>mean_net ~ s(year)</code>: ",
+  "edf ≈ ",
+  format(sum(m_net$edf[-1]), digits = 2),
+  ", approximate <em>p</em> = ",
+  format.pval(summary(m_net)$s.table[1, 4], digits = 4),
+  ".</p>"
+)
+```
+
+## Is there a “dip then rise”? (simple curvature check)
+
+```{r curvature}
+## Global quadratic in calendar year (not a GAM — quick curvature screen)
+yr0 <- min(talk_sc$year)
+talk_sc <- talk_sc |> mutate(year_c = year - yr0)
+m_quad <- lm(mean_net ~ poly(year_c, 2, raw = FALSE), data = talk_sc)
+
+dec_compare <- talk_sc |>
+  mutate(era = cut(
+    year,
+    breaks = c(-Inf, 1989, 2009, Inf),
+    labels = c("1971–1989", "1990–2009", "2010–2021"),
+    right = TRUE
+  )) |>
+  group_by(era) |>
+  summarise(
+    n_talks = dplyr::n(),
+    mean_net = mean(mean_net),
+    se = sd(mean_net) / sqrt(dplyr::n()),
+    .groups = "drop"
+  )
+
+coef_sq <- as.data.frame(stats::coef(summary(m_quad)))
+colnames(coef_sq) <- c("estimate", "se", "t", "p")
+coef_sq$term <- rownames(coef_sq)
+knitr::kable(
+  coef_sq |> dplyr::filter(term != "(Intercept)"),
+  digits = 4,
+  caption = "Polynomial screen: orthogonal quadratic in year (reference = corpus start year)"
+)
+
+knitr::kable(dec_compare, digits = 3, caption = "Mean net score by broad era (edit breaks as needed)")
+```
+
+```{r pred-compare, echo=FALSE, results='asis'}
+grid_y <- seq(min(talk_sc$year), max(talk_sc$year), length.out = 400)
+pdat <- tibble(year = grid_y)
+pdat$fit <- as.numeric(predict(m_net, newdata = pdat))
+
+qlo <- stats::quantile(talk_sc$year, 0.1)
+qhi <- stats::quantile(talk_sc$year, 0.9)
+early <- mean(pdat$fit[pdat$year <= qlo])
+late <- mean(pdat$fit[pdat$year >= qhi])
+delta <- late - early
+
+cat(
+  "<p><strong>GAM smooth — tails of the corpus window:</strong><br/>",
+  "Approx. mean fitted net score in the <em>earlier</em> extreme (~lowest 10% of years): <strong>",
+  format(early, digits = 3),
+  "</strong><br/>",
+  "Approx. mean fitted net score in the <em>later</em> extreme (~highest 10% of years): <strong>",
+  format(late, digits = 3),
+  "</strong><br/>",
+  "Difference (later − earlier): <strong>",
+  format(delta, digits = 3),
+  "</strong> (negative ⇒ corpus drifts toward the invitational pole on this scale).</p>"
+)
+```
+
+---
+
+# Interpretation
+
+This section restates findings in plain language using the **objects computed above** (knit the document to fill numbers).
+
+- **Directional drift:** Compare the GAM-smoothed **early vs late** sentence in the **pred-compare** chunk. If **later − earlier** is **negative**, average paragraph semantics across talks shift toward **higher similarity to the invitational exemplar set** relative to the **prescriptive exemplar set**—as operationalized here, that reads as **less “prescriptive pole” emphasis over time**, not more.
+
+- **“Less then more?”** If the **decadal plot** or **era table** shows the **most recent** decade **tick upward** compared with the 2000s while the **long-run GAM** still slopes down, you can describe a **modest recent partial rebound** on top of a **broad downward** trend (or the opposite pattern if the numbers go the other way). The **quadratic lm** table is only a coarse global curvature screen; the **GAM curve** is the primary visual for local reversals.
+
+- **Caveats:** (1) Results **depend on the exemplar sentences**; swap them and the poles move. (2) **MiniLM** compresses nuance; this is **relative geometry**, not theology. (3) **Paragraph boundaries** come from the `generalconference` source; different segmentation changes scores.
+
+---
+
+# Next steps (outside this report)
+
+For **semantic chunking** of whole talks, **BGE-small** (FastEmbed-compatible weights), **regex-mined exemplar poles**, and **Parquet → R**, see **`analysis/prescriptive_chunks_embed_report.Rmd`** (`analysis/python/gc_chunk_embed_pipeline.py`).
+
+---
+
+# Reproducibility
+
+```{r sessioninfo}
+sessionInfo()
+reticulate::py_config()
+```

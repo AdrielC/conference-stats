@@ -1,0 +1,11 @@
+{
+  "n_talks": 3882,
+  "year_min": 1971,
+  "year_max": 2021,
+  "gam_edf": 3.3204,
+  "gam_p_smooth": 2.2e-16,
+  "cor_year_net": -0.1474,
+  "gam_fit_early_decile": -0.006,
+  "gam_fit_late_decile": -0.0175,
+  "delta_late_minus_early": -0.0116
+}

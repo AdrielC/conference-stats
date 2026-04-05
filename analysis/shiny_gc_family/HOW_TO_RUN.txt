@@ -1,0 +1,25 @@
+General Conference — family Shiny explorer
+===========================================
+
+1) Install R packages (once):
+
+   install.packages(c("shiny", "bslib", "ggplot2", "plotly", "dplyr",
+                      "DT", "jsonlite", "scales", "mgcv"))
+
+2) From the conference-stats repo root:
+
+   shiny::runApp("analysis/shiny_gc_family", launch.browser = TRUE)
+
+   Or in a terminal:
+
+   R -e 'shiny::runApp("analysis/shiny_gc_family", launch.browser=TRUE)'
+
+3) Refreshing charts + bundled data after re-running the Python pipeline:
+
+   Rscript analysis/plot_gc_chunk_embed_results.R
+
+   That writes PNGs to analysis/output/gc_chunk_embed/ and copies them
+   (plus talk_scores.rds and summary_stats.json) into this folder.
+
+The app runs offline: images live in www/ and scores in data/.
+No Python or Parquet is required to open the Shiny UI.

@@ -18,6 +18,16 @@ app_dir <- getwd()
 talk_scores <- readRDS(file.path(app_dir, "data", "talk_scores.rds"))
 summ <- jsonlite::fromJSON(file.path(app_dir, "data", "summary_stats.json"))
 
+ch_hi_path <- file.path(app_dir, "data", "chunk_highlights.rds")
+has_chunk_highlights <- file.exists(ch_hi_path)
+chunk_highlights <- if (has_chunk_highlights) {
+  readRDS(ch_hi_path)
+} else {
+  NULL
+}
+
+years_for_pick <- sort(unique(talk_scores$year))
+
 talk_scores <- talk_scores |>
   mutate(
     decade = floor(.data$year / 10) * 10,
@@ -37,27 +47,99 @@ p_gam_txt <- if (summ$gam_p_smooth < 1e-6 || summ$gam_p_smooth == 0) {
   as.character(signif(summ$gam_p_smooth, 2))
 }
 
-img <- function(src, alt) {
-  tags$figure(
-    class = "figure my-3",
-    tags$img(
-      src = src,
-      alt = alt,
-      class = "img-fluid rounded shadow border",
-      style = "width:100%;max-width:1100px;"
-    ),
-    tags$figcaption(class = "figure-caption text-center", alt)
+chunk_kind_hex <- function(kind) {
+  switch(
+    as.character(kind),
+    prescriptive = "#9b2c2c",
+    invitational = "#276749",
+    swing = "#c05621",
+    "#4a5568"
   )
 }
 
-ui <- page_navbar(
-  title = tagList(
-    tags$span(style = "color:#1a365d;", "\u2606 "),
-    tags$strong("General Conference"),
-    tags$span(" — semantic trends explorer", class = "text-muted")
+## One semantic-chunk card (1-row highlight tbl_df / data.frame)
+chunk_card_ui <- function(row1) {
+  r <- as.list(row1[1L, , drop = FALSE])
+  col <- chunk_kind_hex(r$kind)
+  tags$div(
+    class = "card mb-3 border-0 shadow-sm",
+    style = sprintf("border-left: 4px solid %s !important;", col),
+    tags$div(
+      class = "card-body",
+      tags$h6(class = "mb-2", style = sprintf("color:%s;font-weight:600;", col), as.character(r$kind_title)),
+      tags$p(
+        class = "text-muted small mb-0",
+        tags$strong("Segment index "), r$chunk_idx,
+        " · **Chunk net** ", sprintf("%.4f", as.numeric(r$net_presc)),
+        " (*pull vs this talk’s mean:* ", sprintf("%+.4f", as.numeric(r$vs_talk_mean)), ")",
+        " · cos→presc ", sprintf("%.3f", as.numeric(r$cos_presc)),
+        " · cos→invit ", sprintf("%.3f", as.numeric(r$cos_gentle))
+      ),
+      tags$blockquote(
+        class = "mt-3 mb-0 ps-3",
+        style = "border-left: 3px solid #cbd5e1; font-family: Georgia, 'Times New Roman', serif; font-size: 0.95rem;",
+        tags$p(class = "mb-0", as.character(r$text_excerpt))
+      )
+    )
+  )
+}
+
+img <- function(src, alt) {
+  tags$figure(
+    class = "figure my-2 gallery-figure mx-auto",
+    tags$img(
+      src = src,
+      alt = alt,
+      class = "img-fluid rounded shadow border gallery-plot-img",
+      loading = "lazy",
+      decoding = "async"
+    ),
+    tags$figcaption(class = "figure-caption text-center mt-2 px-2", alt)
+  )
+}
+
+ui <- tagList(
+  tags$head(
+    tags$style(
+      HTML("
+/* fillable=FALSE on page_navbar is the main fix; this backs up against nested flex shrink */
+.gallery-figure {
+  max-width: 100%;
+  margin-bottom: 0.5rem;
+}
+/* Scale high-res PNGs to fit the card + viewport (no re-export needed) */
+.gallery-plot-img {
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: min(72vh, 900px);
+  object-fit: contain;
+  min-height: 0;
+  flex-shrink: 0;
+}
+/* Two-up row: a bit shorter so pairs fit laptop screens */
+@media (min-width: 768px) {
+  .gallery-card-row-split .gallery-plot-img {
+    max-height: min(58vh, 520px);
+  }
+}
+.gallery-card .card-body { overflow-x: auto; overflow-y: visible; }
+.js-plotly-plot .plotly { min-height: 70vh; }
+#plt_scatter { min-height: 72vh; }
+")
+    )
   ),
-  theme = bs_theme(bootswatch = "flatly", primary = "#2c5282"),
-  fillable = TRUE,
+  page_navbar(
+    title = tagList(
+      tags$span(style = "color:#1a365d;", "\u2606 "),
+      tags$strong("General Conference"),
+      tags$span(" — semantic trends explorer", class = "text-muted")
+    ),
+    theme = bs_theme(bootswatch = "flatly", primary = "#2c5282"),
+    fillable = FALSE,
   footer = tags$footer(
     class = "text-center text-muted py-4 mt-5 border-top small px-3",
     tags$p(
@@ -86,8 +168,8 @@ ui <- page_navbar(
             "**Short answer:** On our carefully defined scale, talks drift slightly toward the **invitational** ",
             "side over the decades. The effect is real but modest — this is science-flavored exploration, ",
             "not prophecy or church policy.\n\n",
-            "Use the tabs above: **Gallery** for the big charts, **Explore** to play with sliders and points, ",
-            "**Methods** for how it was built."
+            "Use the tabs above: **Gallery** for the big charts, **Explore** for the interactive scatter, ",
+            "**Chunk insights** to read the actual passages that moved each talk’s score, and **Methods** for how it was built."
           ))
         )
       )
@@ -133,36 +215,51 @@ ui <- page_navbar(
 
   nav_panel(
     tags$span(icon("images"), " Gallery"),
-    layout_columns(
-      col_widths = c(12),
+    div(
+      class = "container-fluid pb-4 gallery-scroll-pane",
       card(
+        class = "gallery-card mb-4",
         card_header("Full-width story panel"),
-        card_body(img("00_panel_trajectory_and_decades.png", "Trajectory and decadal summary combined"))
-      )
-    ),
-    layout_columns(
-      col_widths = c(12),
-      card(
-        card_header("Every talk as a dot — curve is the trend"),
-        card_body(img("01_talk_trajectory_gam.png", "GAM smooth with 95% band over talk-level net scores"))
-      )
-    ),
-    layout_columns(
-      col_widths = c(12, 12),
-      card(
-        card_header("By decade"),
-        card_body(img("02_decadal_lollipop.png", "Decadal means with error bars"))
+        card_body(
+          class = "p-3",
+          img("00_panel_trajectory_and_decades.png", "Trajectory and decadal summary combined")
+        )
       ),
       card(
-        card_header("Two language “poles” in embedding space"),
-        card_body(img("03_cosine_plane_by_year.png", "Prescriptive vs invitational cosine; color = year"))
-      )
-    ),
-    layout_columns(
-      col_widths = c(12),
+        class = "gallery-card mb-4",
+        card_header("Every talk as a dot — curve is the trend"),
+        card_body(
+          class = "p-3",
+          img("01_talk_trajectory_gam.png", "GAM smooth with 95% band over talk-level net scores")
+        )
+      ),
+      layout_columns(
+        class = "gallery-card-row-split",
+        col_widths = c(12, 12),
+        card(
+          class = "gallery-card mb-4",
+          card_header("By decade"),
+          card_body(
+            class = "p-3",
+            img("02_decadal_lollipop.png", "Decadal means with error bars")
+          )
+        ),
+        card(
+          class = "gallery-card mb-4",
+          card_header("Two language “poles” in embedding space"),
+          card_body(
+            class = "p-3",
+            img("03_cosine_plane_by_year.png", "Prescriptive vs invitational cosine; color = year")
+          )
+        )
+      ),
       card(
+        class = "gallery-card mb-4",
         card_header("How distributions shift across eras"),
-        card_body(img("04_era_violins.png", "Violin plots by time period"))
+        card_body(
+          class = "p-3",
+          img("04_era_violins.png", "Violin plots by time period")
+        )
       )
     )
   ),
@@ -196,13 +293,81 @@ ui <- page_navbar(
       )
     ),
     card(
+      class = "explore-plot-card",
       card_header("Interactive: year vs net prescriptive score"),
-      plotlyOutput("plt_scatter", height = "520px")
+      plotlyOutput("plt_scatter", height = "72vh")
     ),
     card(
       card_header("Sample of filtered talks (first 500 rows)"),
       DTOutput("tbl")
     )
+  ),
+
+  nav_panel(
+    tags$span(icon("search-plus"), " Chunk insights"),
+    if (!has_chunk_highlights) {
+      card(
+        card_header("Inspector data not bundled"),
+        card_body(
+          markdown(paste0(
+            "This tab needs **`chunk_highlights.rds`**, built from the full **`chunks_scored.parquet`** output of the Python pipeline.\n\n",
+            "**From the repo root**, after `chunks_scored.parquet` exists next to `talk_scores.parquet`, run:\n\n",
+            "```\nRscript analysis/plot_gc_chunk_embed_results.R\n```\n\n",
+            "That refreshes plots and writes **`analysis/shiny_gc_family/data/chunk_highlights.rds`** (then restart the app)."
+          ))
+        )
+      )
+    } else {
+      tagList(
+        accordion(
+          open = FALSE,
+          accordion_panel(
+            "Why these passages? (read me)",
+            markdown(paste0(
+              "**The headline score for a talk** is the *average* of many **semantic chunks** (~220 words each). ",
+              "Every chunk gets a **net** score: how similar that chunk sounds to our **prescriptive** example sentences ",
+              "(commands, warnings, “beware,” etc.) *minus* how similar it sounds to **gentle / invitational** examples ",
+              "(“I invite,” “ponder,” tenderness toward Christ).\n\n",
+              "**“Meaningful” here means three different things** — all *within the same talk*, so you are comparing apples to apples:\n\n",
+              "1. **Highest net in this talk** — the chunks with the **largest** (least negative) net scores *among this talk’s segments*. ",
+              "That is **not** the same as “sounds prescriptive on an absolute scale”: if every chunk in the talk sits on the gentle side of the corpus, these winners can **still have negative net** — they’re just the *least* gentle slices *here*.\n",
+              "2. **Lowest net in this talk** — the **most** invitational-leaning segments relative to this talk’s other chunks.\n",
+              "3. **Leverage** — chunks farthest from **this talk’s mean** chunk score (big pull on the headline average). ",
+              "We skip segments already listed in (1) or (2) so you don’t see the same index twice.\n\n",
+              "**Light cleaning:** ultra-short closings that mostly end with “amen” (etc.) are usually dropped from these picks so they don’t crowd out substantive paragraphs. ",
+              "The **last semantic chunk of each talk** is also skipped when possible — that’s almost always the peroration (“in the name of…”, “amen”), and it isn’t comparable to body paragraphs. ",
+              "Very short talks automatically fall back to using every chunk so you still get highlights. ",
+              "Quoted text is whitespace-normalized. Rebuild **`chunk_highlights.rds`** with `Rscript analysis/plot_gc_chunk_embed_results.R` after pipeline changes.\n\n",
+              "**Not a verdict on holiness** — only geometry next to hand-picked regex-mined examples, using one embedding model. ",
+              "A chunk can be theologically rich but score “invitational” if its wording matches our gentle prototypes more than our prohibitive ones."
+            ))
+          )
+        ),
+        layout_columns(
+          col_widths = c(6, 6),
+          card(
+            card_header("Pick a session year"),
+            selectInput(
+              "chunk_year",
+              NULL,
+              choices = years_for_pick,
+              selected = max(years_for_pick)
+            )
+          ),
+          card(
+            card_header("Pick a talk (id hash)"),
+            selectInput(
+              "chunk_talk",
+              NULL,
+              choices = NULL,
+              selectize = TRUE
+            )
+          )
+        ),
+        uiOutput("chunk_talk_summary"),
+        uiOutput("chunk_cards")
+      )
+    }
   ),
 
   nav_panel(
@@ -250,6 +415,7 @@ ui <- page_navbar(
       )
     )
   )
+  )
 )
 
 server <- function(input, output, session) {
@@ -290,6 +456,79 @@ server <- function(input, output, session) {
       ) |>
       head(500) |>
       datatable(rownames = FALSE, options = list(scrollX = TRUE, pageLength = 12))
+  })
+
+  observe({
+    if (!isTRUE(has_chunk_highlights)) {
+      return(invisible(NULL))
+    }
+    req(input$chunk_year)
+    ids <- talk_scores |>
+      filter(.data$year == as.integer(input$chunk_year)) |>
+      pull(.data$talk_id) |>
+      unique() |>
+      as.character() |>
+      sort()
+    if (!length(ids)) {
+      return(invisible(NULL))
+    }
+    cur <- input$chunk_talk
+    sel <- if (!is.null(cur) && nzchar(cur) && cur %in% ids) cur else ids[[1L]]
+    updateSelectInput(session, "chunk_talk", choices = ids, selected = sel)
+  })
+
+  output$chunk_talk_summary <- renderUI({
+    if (!isTRUE(has_chunk_highlights)) {
+      return(invisible(NULL))
+    }
+    req(input$chunk_talk)
+    ts <- talk_scores |>
+      filter(as.character(.data$talk_id) == as.character(input$chunk_talk))
+    req(nrow(ts) == 1L)
+    card(
+      card_header("Talk-level context"),
+      card_body(
+        markdown(paste0(
+          "**Conference year:** ", ts$year[[1L]],
+          " · **Number of semantic chunks in this talk:** ", ts$n_chunks[[1L]],
+          " · **Talk net score** (simple average of chunk nets): **",
+          sprintf("%.4f", ts$mean_net_presc[[1L]]), "**\n\n",
+          "**Mean** chunk similarity to prescriptive pole: ", sprintf("%.3f", ts$mean_cos_presc[[1L]]),
+          " · to invitational pole: ", sprintf("%.3f", ts$mean_cos_gentle[[1L]]), ".\n\n",
+          "*Below, each quoted passage is one chunk (~220 tokens). Numbers are relative to the whole corpus, ",
+          "not to General Conference as a moral category.*"
+        ))
+      )
+    )
+  })
+
+  output$chunk_cards <- renderUI({
+    if (!isTRUE(has_chunk_highlights)) {
+      return(invisible(NULL))
+    }
+    req(input$chunk_talk)
+    rows <- chunk_highlights |>
+      filter(as.character(.data$talk_id) == as.character(input$chunk_talk))
+    req(nrow(rows) > 0L)
+    kinds <- c("prescriptive", "invitational", "swing")
+    pieces <- lapply(kinds, function(k) {
+      sub <- rows |> filter(.data$kind == k)
+      if (nrow(sub) == 0L) {
+        return(NULL)
+      }
+      if (k == "invitational") {
+        sub <- sub |> arrange(.data$net_presc)
+      } else if (k == "swing") {
+        sub <- sub |> arrange(desc(abs(.data$vs_talk_mean)))
+      } else {
+        sub <- sub |> arrange(desc(.data$net_presc))
+      }
+      tagList(
+        tags$h5(class = "mt-4 mb-3", style = "color:#2c5282;font-weight:600;", unique(as.character(sub$kind_title))[1]),
+        lapply(seq_len(nrow(sub)), function(i) chunk_card_ui(sub[i, , drop = FALSE]))
+      )
+    })
+    tagList(Filter(Negate(is.null), pieces))
   })
 }
 

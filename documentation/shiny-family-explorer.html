@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>General Conference — semantic trends (family demo)</title>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --text: #1a202c;
+      --muted: #4a5568;
+      --accent: #2c5282;
+      --border: #e2e8f0;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-size: 1.05rem;
+      line-height: 1.55;
+      color: var(--text);
+      background: var(--bg);
+      padding: 1rem 1.1rem 2.5rem;
+    }
+    main { max-width: 40rem; margin: 0 auto; }
+    h1 {
+      font-size: 1.35rem;
+      font-weight: 700;
+      color: var(--accent);
+      line-height: 1.25;
+      margin: 0 0 0.35rem;
+    }
+    .sub { color: var(--muted); font-size: 0.95rem; margin: 0 0 1.25rem; }
+    section {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.1rem;
+      margin-bottom: 1rem;
+      box-shadow: 0 1px 2px rgba(0,0,0,.04);
+    }
+    h2 {
+      font-size: 1.05rem;
+      margin: 0 0 0.5rem;
+      color: var(--accent);
+    }
+    p { margin: 0 0 0.75rem; }
+    p:last-child { margin-bottom: 0; }
+    code, .mono {
+      font-family: ui-monospace, "Cascadia Code", "SF Mono", Menlo, monospace;
+      font-size: 0.88em;
+      background: #edf2f7;
+      padding: 0.12rem 0.35rem;
+      border-radius: 4px;
+      word-break: break-all;
+    }
+    pre {
+      background: #1a365d;
+      color: #e2e8f0;
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      margin: 0.5rem 0 0;
+    }
+    pre code { background: none; padding: 0; color: inherit; }
+    a { color: var(--accent); }
+    .footer {
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-top: 1.5rem;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>General Conference semantic trends</h1>
+    <p class="sub">Family-friendly explainer · Personal research demo · Not affiliated with the Church</p>
+
+    <section>
+      <h2>What this is</h2>
+      <p>
+        A computer looks at <strong>wording patterns</strong> in every General Conference talk (1971–2021) in a public corpus,
+        using an embedding model (<code>BAAI/bge-small-en-v1.5</code>). We compare each chunk of text to hand-picked example sentences
+        for a <strong>prescriptive</strong> pole vs an <strong>invitational</strong> pole, then average to a talk-level score.
+        This is <strong>language geometry</strong>, not theology or church policy.
+      </p>
+    </section>
+
+    <section>
+      <h2>Interactive app (R Shiny)</h2>
+      <p>
+        Clone or download the <a href="https://github.com/AdrielC/conference-stats">conference-stats</a> repo,
+        install R packages listed in <span class="mono">analysis/shiny_gc_family/HOW_TO_RUN.md</span>, then from the repo root:
+      </p>
+      <pre><code>shiny::runApp("analysis/shiny_gc_family", launch.browser = TRUE)</code></pre>
+      <p>
+        The app works offline once bundled: plots in <span class="mono">www/</span>, tables in <span class="mono">data/</span>.
+        Rebuild plots and data with <span class="mono">Rscript analysis/plot_gc_chunk_embed_results.R</span>.
+      </p>
+    </section>
+
+    <section>
+      <h2>Chunk insights tab</h2>
+      <p>
+        When <span class="mono">chunk_highlights.rds</span> is present, you can read the passages that were
+        <strong>highest / lowest net score within each talk</strong> (not necessarily “prescriptive” on an absolute scale),
+        plus high-leverage segments. Short “amen” closings and the last chunk of each talk are usually filtered out.
+      </p>
+    </section>
+
+    <section>
+      <h2>Markdown version of this page</h2>
+      <p>
+        For links, GitHub Pages notes, and the HTMLPreview URL that works on phones, see
+        <a href="https://github.com/AdrielC/conference-stats/blob/main/documentation/shiny-family-explorer.md">documentation/shiny-family-explorer.md</a>
+        in the repo.
+      </p>
+    </section>
+
+    <p class="footer">
+      Open-source demo · Embeddings + semantic chunking pipeline in repo ·
+      <a href="https://github.com/AdrielC/conference-stats">GitHub</a>
+    </p>
+  </main>
+</body>
+</html>

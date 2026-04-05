@@ -33,7 +33,7 @@ if (!file.exists(parquet_path)) {
 }
 
 needed <- c(
-  "ggplot2", "dplyr", "scales", "mgcv", "tidyr",
+  "ggplot2", "dplyr", "scales", "mgcv", "tidyr", "stringr",
   "patchwork", "ggtext", "nanoparquet", "jsonlite"
 )
 miss <- needed[!vapply(needed, requireNamespace, quietly = TRUE, FUN.VALUE = logical(1))]
@@ -281,10 +281,149 @@ jsonlite::write_json(
   auto_unbox = TRUE
 )
 
-## Sync figures + stats into Shiny app folder (for family demo / repo)
 shiny_root <- file.path(repo_root, "analysis", "shiny_gc_family")
 shiny_www <- file.path(shiny_root, "www")
 shiny_data <- file.path(shiny_root, "data")
+
+## Chunk-level highlights for Shiny “meaningful segments” inspector
+ch_path <- file.path(dirname(normalizePath(parquet_path)), "chunks_scored.parquet")
+if (file.exists(ch_path) && requireNamespace("stringr", quietly = TRUE)) {
+  ch <- nanoparquet::read_parquet(ch_path)
+  ch <- ch |>
+    mutate(
+      talk_id = as.character(.data$talk_id),
+      year = as.integer(.data$year)
+    )
+  th <- ch |>
+    group_by(.data$talk_id) |>
+    summarise(
+      talk_mean_net = mean(.data$net_presc, na.rm = TRUE),
+      n_chunks_talk = dplyr::n(),
+      .groups = "drop"
+    )
+  ch2 <- ch |>
+    dplyr::left_join(th, by = "talk_id") |>
+    mutate(
+      text_clean = stringr::str_squish(as.character(.data$text)),
+      ## Word count for filtering ritual closings / ultra-short segments
+      n_words = lengths(
+        regmatches(.data$text_clean, gregexpr("\\S+", .data$text_clean, perl = TRUE))
+      ),
+      ends_with_amen = stringr::str_detect(
+        .data$text_clean,
+        stringr::regex("\\bamen\\.?\\s*$", ignore_case = TRUE)
+      ),
+      ## Drop short closings and tiny fragments; base rule before final-segment rule below
+      highlight_ok = .data$n_words >= 55L &
+        !(.data$n_words < 70L & .data$ends_with_amen)
+    ) |>
+    dplyr::group_by(.data$talk_id) |>
+    dplyr::mutate(
+      ## Final segment is almost always formulaic (“in the name of…”, “amen.”);
+      ## exclude from the *preferred* pool. pick_within_talk falls back to all
+      ## chunks when too few are left (very short talks).
+      is_last_in_talk = .data$chunk_idx == max(.data$chunk_idx, na.rm = TRUE)
+    ) |>
+    dplyr::ungroup() |>
+    dplyr::mutate(highlight_ok = .data$highlight_ok & !.data$is_last_in_talk)
+
+  pick_within_talk <- function(rows, slice_fn, n_pick) {
+    dplyr::group_by(rows, .data$talk_id) |>
+      dplyr::group_modify(function(d, key) {
+        d_use <- if (sum(d$highlight_ok, na.rm = TRUE) >= n_pick) {
+          dplyr::filter(d, .data$highlight_ok)
+        } else {
+          d
+        }
+        slice_fn(d_use, n_pick)
+      }) |>
+      dplyr::ungroup()
+  }
+
+  n_ext <- 3L
+  n_swing <- 2L
+
+  hi_presc <- ch2 |>
+    pick_within_talk(function(d, n_pick) {
+      dplyr::slice_max(d, order_by = .data$net_presc, n = n_pick, with_ties = FALSE)
+    }, n_ext) |>
+    mutate(kind = "prescriptive")
+
+  hi_inv <- ch2 |>
+    pick_within_talk(function(d, n_pick) {
+      dplyr::slice_min(d, order_by = .data$net_presc, n = n_pick, with_ties = FALSE)
+    }, n_ext) |>
+    mutate(kind = "invitational")
+
+  excl <- dplyr::bind_rows(
+    hi_presc |> dplyr::transmute(talk_id = .data$talk_id, chunk_idx = .data$chunk_idx),
+    hi_inv |> dplyr::transmute(talk_id = .data$talk_id, chunk_idx = .data$chunk_idx)
+  ) |>
+    dplyr::distinct()
+
+  hi_swing <- ch2 |>
+    dplyr::anti_join(excl, by = c("talk_id", "chunk_idx")) |>
+    dplyr::group_by(.data$talk_id) |>
+    dplyr::group_modify(function(d, key) {
+      if (nrow(d) == 0L) {
+        return(d[integer(0), , drop = FALSE])
+      }
+      d_use <- if (sum(d$highlight_ok, na.rm = TRUE) >= n_swing) {
+        dplyr::filter(d, .data$highlight_ok)
+      } else {
+        d
+      }
+      if (nrow(d_use) < n_swing) {
+        d_use <- d
+      }
+      d_use <- d_use |>
+        dplyr::mutate(dev = abs(.data$net_presc - .data$talk_mean_net[[1L]]))
+      dplyr::slice_max(d_use, order_by = .data$dev, n = n_swing, with_ties = FALSE) |>
+        dplyr::select(-"dev")
+    }) |>
+    dplyr::ungroup() |>
+    mutate(kind = "swing")
+
+  chunk_hi <- dplyr::bind_rows(hi_presc, hi_inv, hi_swing) |>
+    mutate(
+      vs_talk_mean = .data$net_presc - .data$talk_mean_net,
+      kind_title = dplyr::case_when(
+        .data$kind == "prescriptive" ~
+          "Highest net in this talk (least gentle vs this talk’s other chunks; can still be < 0 overall)",
+        .data$kind == "invitational" ~
+          "Lowest net in this talk (most invitational-leaning vs this talk’s other chunks)",
+        .data$kind == "swing" ~
+          "High leverage (vs talk mean; segments not listed above)",
+        TRUE ~ as.character(.data$kind)
+      ),
+      text_excerpt = stringr::str_trunc(.data$text_clean, 650L, ellipsis = "\u2026")
+    ) |>
+    select(
+      "talk_id", "year", "chunk_idx", "kind", "kind_title",
+      "net_presc", "cos_presc", "cos_gentle",
+      "talk_mean_net", "vs_talk_mean",
+      "n_chunks_talk",
+      "text_excerpt"
+    )
+
+  if (dir.exists(shiny_data)) {
+    saveRDS(chunk_hi, file.path(shiny_data, "chunk_highlights.rds"), compress = "xz")
+    message(
+      sprintf(
+        "Chunk inspector data: %d highlight rows → %s",
+        nrow(chunk_hi),
+        file.path(shiny_data, "chunk_highlights.rds")
+      )
+    )
+  }
+} else {
+  message(
+    "Tip: run Python pipeline to create chunks_scored.parquet next to talk_scores, ",
+    "then re-run this script to build chunk_highlights.rds for the Shiny app."
+  )
+}
+
+## Sync figures + stats into Shiny app folder (for family demo / repo)
 if (dir.exists(shiny_www) && dir.exists(shiny_data)) {
   pngs <- list.files(out_dir, pattern = "\\.png$", full.names = TRUE)
   if (length(pngs)) {

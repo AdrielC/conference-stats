@@ -10,6 +10,7 @@ Files live under **`documentation/`** (not `docs/`, which is reserved for pkgdow
 - **Standalone HTML:** [`documentation/shiny-family-explorer.html`](documentation/shiny-family-explorer.html) — open locally, or use  
   [HTMLPreview for this file on `main`](https://htmlpreview.github.io/?https://raw.githubusercontent.com/AdrielC/conference-stats/main/documentation/shiny-family-explorer.html).
 - **Run instructions:** [`analysis/shiny_gc_family/HOW_TO_RUN.md`](analysis/shiny_gc_family/HOW_TO_RUN.md).
+- **Custom pole (live phrase → trend chart):** In the Shiny app, type a phrase and click **Embed & update chart**; requires Python + `talk_emb_sums.rds` / `subword_idf.npy` in `data/` (produced by the updated Python pipeline, then `Rscript analysis/plot_gc_chunk_embed_results.R`).
 
 ## Main figures (embedding pipeline)
 

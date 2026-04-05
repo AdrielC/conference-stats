@@ -438,6 +438,28 @@ if (dir.exists(shiny_www) && dir.exists(shiny_data)) {
     filter(!is.na(.data$year), !is.na(.data$mean_net_presc)) |>
     mutate(year = as.integer(.data$year))
   saveRDS(d_shiny, file.path(shiny_data, "talk_scores.rds"), compress = "xz")
+
+  par_dir <- dirname(normalizePath(parquet_path))
+  tes_parq <- file.path(par_dir, "talk_emb_sums.parquet")
+  idf_npy <- file.path(par_dir, "subword_idf.npy")
+  meta_js <- file.path(par_dir, "pipeline_meta.json")
+  if (file.exists(tes_parq) && requireNamespace("nanoparquet", quietly = TRUE)) {
+    tes_df <- nanoparquet::read_parquet(tes_parq)
+    saveRDS(tes_df, file.path(shiny_data, "talk_emb_sums.rds"), compress = "xz")
+    message("Synced talk_emb_sums.rds (Custom pole tab).")
+  } else {
+    message(
+      "No talk_emb_sums.parquet next to talk_scores — re-run Python pipeline for Custom pole data."
+    )
+  }
+  if (file.exists(idf_npy)) {
+    invisible(file.copy(idf_npy, file.path(shiny_data, "subword_idf.npy"), overwrite = TRUE))
+    message("Synced subword_idf.npy")
+  }
+  if (file.exists(meta_js)) {
+    invisible(file.copy(meta_js, file.path(shiny_data, "pipeline_meta.json"), overwrite = TRUE))
+    message("Synced pipeline_meta.json")
+  }
   message("Synced → analysis/shiny_gc_family/{www,data}/")
 }
 

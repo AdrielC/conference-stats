@@ -374,6 +374,8 @@ def main() -> None:
         num_workers=workers,
         show_progress=prog,
     )
+    ## Needed so ad hoc phrases use the same subword IDF weights as corpus chunks
+    np.save(args.output_dir / "subword_idf.npy", np.asarray(idf, dtype=np.float64))
 
     prefetch = not args.no_prefetch
     print(f"Encoding poles: {len(presc_ex)} prescriptive, {len(gent_ex)} invitational …", file=sys.stderr)
@@ -419,6 +421,16 @@ def main() -> None:
         net_presc=net.astype(np.float64),
     )
 
+    ## Per-talk sum of (L2-normalized) chunk embeddings: for any unit query u,
+    ## mean cosine(chunk_i, u) = dot(sum_i emb_i, u) / n_chunks.
+    ddim = int(emb_c.shape[1])
+    _emb_part = pd.DataFrame(emb_c, columns=[f"s_{j}" for j in range(ddim)])
+    _emb_part["talk_id"] = chunks_df["talk_id"].values
+    _emb_part["year"] = chunks_df["year"].values
+    talk_emb_sums = _emb_part.groupby(["talk_id", "year"], as_index=False).sum()
+    _nch = chunks_df.groupby(["talk_id", "year"], as_index=False).size().rename(columns={"size": "n_chunks"})
+    talk_emb_sums = talk_emb_sums.merge(_nch, on=["talk_id", "year"], how="left")
+
     talk_agg = (
         chunks_df.groupby(["talk_id", "year"], dropna=False, as_index=False)
         .agg(
@@ -436,6 +448,7 @@ def main() -> None:
 
     chunks_df.to_parquet(chunks_path, index=False)
     talk_agg.to_parquet(talk_path, index=False)
+    talk_emb_sums.to_parquet(args.output_dir / "talk_emb_sums.parquet", index=False)
 
     import json
 
@@ -443,6 +456,7 @@ def main() -> None:
         "model": args.model,
         "n_talks": int(len(df)),
         "n_chunks": int(len(chunks_df)),
+        "embed_dim": ddim,
         "n_presc_exemplars": len(presc_ex),
         "n_gentle_exemplars": len(gent_ex),
         "max_chunk_tokens": args.max_chunk_tokens,
@@ -451,7 +465,10 @@ def main() -> None:
         "tqdm_progress": prog,
     }
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-    print(f"Wrote {chunks_path} and {talk_path}", file=sys.stderr)
+    print(
+        f"Wrote {chunks_path} | {talk_path} | talk_emb_sums.parquet | subword_idf.npy",
+        file=sys.stderr,
+    )
 
 
 if __name__ == "__main__":

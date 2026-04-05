@@ -37,4 +37,6 @@ analysis/shiny_gc_family/data/chunk_highlights.rds — used by the
 highest-leverage chunks per talk).
 
 The app runs offline: images live in www/ and scores in data/.
-No Python or Parquet is required to open the Shiny UI.
+No Python or Parquet is required to open most of the Shiny UI.
+
+**Custom pole tab:** Needs local **Python** (same stack as `analysis/python/gc_chunk_embed_pipeline.py`) plus `data/talk_emb_sums.rds` and `data/subword_idf.npy` synced by the plot script after an updated pipeline run. Set `CONFERENCESTATS_PYTHON` if `python3` is not the right interpreter.

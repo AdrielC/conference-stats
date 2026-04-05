@@ -38,9 +38,14 @@ Rebuild figures and bundled data (including `chunk_highlights.rds` when `chunks_
 Rscript analysis/plot_gc_chunk_embed_results.R
 ```
 
+That copy step also ships **`talk_emb_sums.rds`**, **`subword_idf.npy`**, and **`pipeline_meta.json`** into `analysis/shiny_gc_family/data/` when the Python pipeline has written them next to `talk_scores.parquet`. Those power the **Custom pole** tab: you type a phrase, Python embeds it with the same BGE + tf–idf scheme, and the app plots mean cosine vs conference year (filters follow the **Explore** tab).
+
+**Custom pole requirements:** Python 3 with `analysis/python/requirements-gc-embed.txt` installed; `python3` on your `PATH` or set `CONFERENCESTATS_PYTHON` to your venv interpreter. The first embedding call loads the model and can take ~1 minute.
+
 ## What we changed recently (high level)
 
 - **Gallery images** are scaled with CSS so high-resolution PNGs fit the card and viewport without re-exporting files.
 - **Chunk insights** use cleaned text, skip stiff “amen” closings and the **last chunk** of each talk when possible, avoid duplicate segments across categories, and label “highest net in this talk” so negative scores are not misread as globally “prescriptive.”
+- **Custom pole** tab: optional interactive trend for any short phrase you type, using the same embedding geometry as the main pipeline (requires Python + synced `talk_emb_sums` / `subword_idf` in `data/`).
 
 For the full figure set and README thumbnails, see the [repository `README.md`](../README.md).

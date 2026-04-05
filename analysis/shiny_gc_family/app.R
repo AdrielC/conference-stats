@@ -28,6 +28,31 @@ chunk_highlights <- if (has_chunk_highlights) {
 
 years_for_pick <- sort(unique(talk_scores$year))
 
+emb_sum_path <- file.path(app_dir, "data", "talk_emb_sums.rds")
+idf_bundle_path <- file.path(app_dir, "data", "subword_idf.npy")
+pipe_meta_path <- file.path(app_dir, "data", "pipeline_meta.json")
+has_custom_pole_bundle <- file.exists(emb_sum_path) && file.exists(idf_bundle_path)
+talk_emb_sums_tbl <- if (isTRUE(has_custom_pole_bundle)) readRDS(emb_sum_path) else NULL
+pipe_meta <- if (file.exists(pipe_meta_path)) {
+  jsonlite::fromJSON(pipe_meta_path, simplifyVector = TRUE)
+} else {
+  list(model = "BAAI/bge-small-en-v1.5")
+}
+if (is.null(pipe_meta$model) || !nzchar(as.character(pipe_meta$model))) {
+  pipe_meta$model <- "BAAI/bge-small-en-v1.5"
+}
+py_embed_script <- normalizePath(file.path(app_dir, "..", "python", "embed_query_phrase.py"), mustWork = FALSE)
+has_py_embed_script <- nzchar(py_embed_script) && file.exists(py_embed_script)
+s_cols_custom <- if (isTRUE(has_custom_pole_bundle)) {
+  nm <- names(talk_emb_sums_tbl)
+  sc <- nm[grepl("^s_[0-9]+$", nm)]
+  sc <- sc[order(as.integer(sub("^s_", "", sc)))]
+  if (length(sc) != 384L) character(0) else sc
+} else {
+  character(0)
+}
+has_custom_dim_ok <- length(s_cols_custom) == 384L
+
 talk_scores <- talk_scores |>
   mutate(
     decade = floor(.data$year / 10) * 10,
@@ -169,7 +194,8 @@ ui <- tagList(
             "side over the decades. The effect is real but modest — this is science-flavored exploration, ",
             "not prophecy or church policy.\n\n",
             "Use the tabs above: **Gallery** for the big charts, **Explore** for the interactive scatter, ",
-            "**Chunk insights** to read the actual passages that moved each talk’s score, and **Methods** for how it was built."
+            "**Custom pole** to type your own phrase and see how talks align to it over time (needs Python + synced embedding data), ",
+            "**Chunk insights** to read passages that moved each talk’s score, and **Methods** for how it was built."
           ))
         )
       )
@@ -304,6 +330,91 @@ ui <- tagList(
   ),
 
   nav_panel(
+    tags$span(icon("star"), " Custom pole"),
+    if (!isTRUE(has_custom_pole_bundle) || !isTRUE(has_custom_dim_ok)) {
+      card(
+        card_header("Embedding sums not bundled"),
+        card_body(
+          markdown(paste0(
+            "This tab needs **`talk_emb_sums.rds`** and **`subword_idf.npy`** in `analysis/shiny_gc_family/data/`. ",
+            "They are produced when you run the **Python** chunk-embedding pipeline (see `analysis/python/gc_chunk_embed_pipeline.py`) ",
+            "and then refresh Shiny data:\n\n",
+            "```\nRscript analysis/plot_gc_chunk_embed_results.R\n```\n\n",
+            "That copies the new Parquet/NumPy artifacts next to **`talk_scores.parquet`** into this app folder. ",
+            "If `talk_emb_sums.rds` exists but columns are wrong, re-run the **updated** Python pipeline so `talk_emb_sums.parquet` is regenerated."
+          ))
+        )
+      )
+    } else if (!isTRUE(has_py_embed_script)) {
+      card(
+        card_header("Python script not found"),
+        card_body(
+          markdown(paste0(
+            "Expected `embed_query_phrase.py` at:\n\n`",
+            file.path(app_dir, "..", "python", "embed_query_phrase.py"),
+            "`\n\nRun the app from the repo so `analysis/python/` is one level above this folder."
+          ))
+        )
+      )
+    } else {
+      tagList(
+        accordion(
+          open = FALSE,
+          accordion_panel(
+            "What does this do?",
+            markdown(paste0(
+              "You type a **short phrase** (a word, quotation, or sentence). The app calls **Python** to embed it with the ",
+              "same **BGE + tf–idf pooling** and **subword IDF** as the main corpus pipeline, then measures **mean cosine similarity** ",
+              "between that direction and each talk’s semantic chunks (using precomputed **per-talk sums** of chunk vectors — ",
+              "exactly consistent with averaging cosines because chunk vectors are length-normalized).\n\n",
+              "**Not keyword counts** — semantic similarity. **First click** may take a minute while PyTorch loads the model. ",
+              "You need a working Python env with `pip install -r analysis/python/requirements-gc-embed.txt`.\n\n",
+              "**Year / era filters** match the **Explore** tab sliders and checkboxes."
+            ))
+          )
+        ),
+        card(
+          card_header("Your phrase → trend over time"),
+          card_body(
+            textAreaInput(
+              "custom_phrase",
+              label = "Phrase or sentence to embed",
+              value = "",
+              rows = 3L,
+              placeholder = "e.g. covenant, or a full short sentence you care about",
+              width = "100%"
+            ),
+            layout_columns(
+              col_widths = c(6, 6),
+              actionButton(
+                "run_custom_embed",
+                label = "Embed & update chart",
+                class = "btn-primary",
+                width = "100%",
+                icon = icon("play")
+              ),
+              tags$p(
+                class = "small text-muted mb-0 align-self-center",
+                "Optional: set env ",
+                tags$code("CONFERENCESTATS_PYTHON"),
+                " to your venv’s Python if ",
+                tags$code("python3"),
+                " is wrong."
+              )
+            ),
+            verbatimTextOutput("custom_embed_err", placeholder = TRUE)
+          )
+        ),
+        card(
+          class = "explore-plot-card",
+          card_header(uiOutput("custom_plot_title")),
+          plotlyOutput("plt_custom_pole", height = "68vh")
+        )
+      )
+    }
+  ),
+
+  nav_panel(
     tags$span(icon("search-plus"), " Chunk insights"),
     if (!has_chunk_highlights) {
       card(
@@ -382,7 +493,8 @@ ui <- tagList(
           "4. **Pooling:** *Subword tf–idf weights* on the transformer’s last layer — “sicko mode” attention to rare-ish words.\n",
           "5. **Poles:** Real sentences from talks matching regex bundles for prescriptive vs gentle language; average their vectors.\n",
           "6. **Score:** For each chunk: cosine to prescriptive pole minus cosine to gentle pole. **Talk score = mean over chunks.**\n",
-          "7. **Trend:** `mgcv` GAM smooth on year in R; figures saved under `analysis/output/gc_chunk_embed/`.\n\n",
+          "7. **Trend:** `mgcv` GAM smooth on year in R; figures saved under `analysis/output/gc_chunk_embed/`.\n",
+          "8. **Custom pole (Shiny tab):** Precomputed **sums of chunk embedding vectors** per talk plus frozen **subword IDF** let you embed any short phrase with Python and plot **mean cosine** vs year (same pooling as the main pipeline).\n\n",
           "The Python driver is `analysis/python/gc_chunk_embed_pipeline.py`. ",
           "A plain-language report lives in `analysis/prescriptive_chunks_embed_report.Rmd`."
         ))
@@ -419,6 +531,123 @@ ui <- tagList(
 )
 
 server <- function(input, output, session) {
+  custom_state <- reactiveValues(mean_cos = NULL, phrase = NULL, err = "")
+
+  observeEvent(input$run_custom_embed, {
+    if (!isTRUE(has_custom_pole_bundle) || !isTRUE(has_custom_dim_ok) || !isTRUE(has_py_embed_script)) {
+      return(invisible(NULL))
+    }
+    phrase <- trimws(input$custom_phrase)
+    if (!nzchar(phrase)) {
+      showNotification("Enter text to embed.", type = "warning")
+      return(invisible(NULL))
+    }
+    if (nchar(phrase) > 2000L) {
+      showNotification("Please keep the phrase under 2000 characters.", type = "warning")
+      return(invisible(NULL))
+    }
+    custom_state$err <- ""
+    py <- Sys.getenv("CONFERENCESTATS_PYTHON", unset = "")
+    if (!nzchar(py)) {
+      py <- Sys.which("python3")
+    }
+    if (!nzchar(py)) {
+      py <- Sys.which("python")
+    }
+    if (!nzchar(py)) {
+      custom_state$err <- "No python3 or python on PATH. Set CONFERENCESTATS_PYTHON to your interpreter."
+      showNotification(custom_state$err, type = "error")
+      return(invisible(NULL))
+    }
+    idf_abs <- normalizePath(idf_bundle_path, winslash = "/", mustWork = TRUE)
+    scr_abs <- normalizePath(py_embed_script, winslash = "/", mustWork = TRUE)
+    model <- as.character(pipe_meta$model)
+    args <- c(scr_abs, "--model", model, "--idf", idf_abs, "--phrase", phrase)
+    errf <- tempfile(fileext = ".log")
+    on.exit(unlink(errf), add = TRUE)
+    res <- withProgress(
+      message = "Embedding phrase",
+      detail = "First run loads the model into memory (~1 min).",
+      value = 0.35,
+      expr = {
+        system2(py, args = args, stdout = TRUE, stderr = errf)
+      }
+    )
+    st <- attr(res, "status")
+    errtxt <- paste(readLines(errf, warn = FALSE), collapse = "\n")
+    if (!is.null(st) && !is.na(st) && st != 0L) {
+      custom_state$err <- paste0(
+        "Python exited with status ", st, ".\n\nSTDERR:\n", errtxt,
+        "\n\nSTDOUT:\n", paste(res, collapse = "\n")
+      )
+      showNotification("Embedding failed — see message below the button.", type = "error")
+      return(invisible(NULL))
+    }
+    u <- tryCatch(
+      jsonlite::fromJSON(paste(res, collapse = "")),
+      error = function(e) NULL
+    )
+    if (is.null(u) || length(u) != 384L) {
+      custom_state$err <- paste(
+        "Could not parse 384-d JSON from Python.\n",
+        "STDERR:\n", errtxt, "\nSTDOUT:\n", paste(res, collapse = "\n"),
+        sep = ""
+      )
+      showNotification("Bad embedding output.", type = "error")
+      return(invisible(NULL))
+    }
+    S <- as.matrix(talk_emb_sums_tbl[, s_cols_custom])
+    mc <- as.numeric(S %*% matrix(u, ncol = 1L)) / talk_emb_sums_tbl$n_chunks
+    custom_state$mean_cos <- mc
+    custom_state$phrase <- phrase
+  })
+
+  output$custom_embed_err <- renderText({
+    e <- custom_state$err
+    if (is.null(e) || !nzchar(e)) {
+      return("")
+    }
+    e
+  })
+
+  output$custom_plot_title <- renderUI({
+    ph <- custom_state$phrase
+    if (is.null(ph) || !nzchar(ph)) {
+      return(tags$h6(class = "text-muted mb-0", "Run a query to plot year vs mean cosine"))
+    }
+    tags$div(
+      class = "mb-0",
+      "Year vs mean cosine to ",
+      tags$strong(style = "color:#1a365d;", ph)
+    )
+  })
+
+  output$plt_custom_pole <- renderPlotly({
+    req(custom_state$mean_cos)
+    req(length(input$era_f) > 0L)
+    te <- talk_emb_sums_tbl
+    te$mean_cos_custom <- custom_state$mean_cos
+    d <- talk_scores |>
+      inner_join(
+        te |> select("talk_id", "year", "mean_cos_custom"),
+        by = c("talk_id", "year")
+      ) |>
+      filter(
+        .data$year >= input$yr[[1L]],
+        .data$year <= input$yr[[2L]],
+        .data$era %in% input$era_f
+      )
+    req(nrow(d) > 0L)
+    g <- ggplot(d, aes(year, mean_cos_custom, text = talk_id, size = n_chunks)) +
+      geom_hline(yintercept = 0, linetype = 2, color = "gray50") +
+      geom_point(alpha = 0.25, color = "#276749") +
+      geom_smooth(method = "gam", formula = y ~ s(x, k = 10), color = "#9b2c2c", fill = "#9b2c2c33", linewidth = 0.7) +
+      scale_size(range = c(1, 6), guide = "none") +
+      labs(x = "Conference year", y = "Mean cosine (your phrase ↔ chunks)") +
+      theme_minimal(base_size = 13)
+    ggplotly(g, tooltip = "text") |> layout(hovermode = "closest")
+  })
+
   filtered <- reactive({
     req(length(input$era_f) > 0)
     d <- talk_scores |>

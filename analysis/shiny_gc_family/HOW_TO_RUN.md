@@ -1,45 +1,54 @@
 # General Conference — semantic trends Shiny explorer
 
----
+## 1. R packages (once)
 
-1. Install R packages (once):
-
-```R
-install.packages(c("shiny", "bslib", "ggplot2", "plotly", "dplyr", 
-                   "DT", "jsonlite", "scales", "mgcv"))
+```r
+install.packages(c(
+  "shiny", "bslib", "ggplot2", "plotly", "dplyr",
+  "DT", "jsonlite", "scales", "mgcv"
+))
 ```
 
-1. From the conference-stats repo root:
+## 2. Run the app
 
-```R
+From the **conference-stats repo root**:
+
+```r
 shiny::runApp("analysis/shiny_gc_family", launch.browser = TRUE)
 ```
 
-Or in a terminal:
+Or in a shell:
 
 ```bash
-R -e 'shiny::runApp("analysis/shiny_gc_family", launch.browser=TRUE)'
+R -e 'shiny::runApp("analysis/shiny_gc_family", launch.browser = TRUE)'
 ```
 
-1. Refreshing charts + bundled data after re-running the Python pipeline:
+## 3. Refresh figures and `data/` after the Python embed pipeline
+
+From repo root:
 
 ```bash
 Rscript analysis/plot_gc_chunk_embed_results.R
 ```
 
-That writes PNGs to `analysis/output/gc_chunk_embed/` and copies them
-(plus `talk_scores.rds` and `summary_stats.json`) into this folder.
+That writes PNGs under `analysis/output/gc_chunk_embed/` and copies **`talk_scores.rds`**, **`summary_stats.json`**, and figure PNGs into this app folder. If `chunks_scored.parquet` sits next to the pipeline’s `talk_scores.parquet`, the script also builds **`chunk_highlights.rds`** (Chunk insights tab) and copies **`chunks_scored.parquet`** (phrase-aligned exemplars on Showpiece / Contrast tabs).
 
-If analysis/data/gc_chunk_embed/chunks_scored.parquet exists next
-to talk_scores.parquet, the same script also builds
-analysis/shiny_gc_family/data/chunk_highlights.rds — used by the
-**Chunk insights** tab (top prescriptive / most invitational /
-highest-leverage chunks per talk). The plot script also copies
-`chunks_scored.parquet` into this folder when present; the **Showpiece**
-and **Contrast** tabs use it with Python to pick **phrase-aligned**
-exemplar passages (cos(A)−cos(B) on chunks) after you embed two phrases.
+Set **`CONFERENCESTATS_PYTHON`** if `python3` is not the interpreter with `requirements-gc-embed.txt` installed.
 
-The app runs offline: images live in www/ and scores in data/.
-No Python or Parquet is required to open most of the Shiny UI.
+## 4. What works without Python
 
-**Custom pole tab:** Needs local **Python** (same stack as `analysis/python/gc_chunk_embed_pipeline.py`) plus `data/talk_emb_sums.rds` and `data/subword_idf.npy` synced by the plot script after an updated pipeline run. Set `CONFERENCESTATS_PYTHON` if `python3` is not the right interpreter.
+Gallery, Explore, Methods, and most of Chunk insights: **offline** from tracked `www/` + `data/talk_scores.rds` (and `chunk_highlights.rds` when present).
+
+## 5. What needs Python
+
+| Feature | Required files (under this folder’s `data/`) |
+|--------|-----------------------------------------------|
+| **Custom pole** — embed a phrase, plot vs year | `talk_emb_sums.rds`, `subword_idf.npy`, `pipeline_meta.json` (synced by the plot script) |
+| **Two-phrase contrast** | Same as custom pole |
+| **Phrase-aligned exemplar** quotes | `chunks_scored.parquet` + the sidecars above; calls `analysis/python/best_contrast_chunks.py` at runtime |
+
+If those Parquet/RDS/NPY files are missing, run the Python pipeline and the plot script (see repo **`README.md`**). Generated sidecars are listed in **`.gitignore`** so local syncs do not clutter `git status`; rebuild them after pulling.
+
+## 6. Alternate talk corpus (full Python path)
+
+To score talks not from `generalconference`, produce a Parquet with columns **`talk_id`**, **`year`**, **`text`** (e.g. `analysis/python/jsonl_to_talks_parquet.py` from JSONL), then run **`gc_chunk_embed_pipeline.py`** and point `plot_gc_chunk_embed_results.R` at the new `talk_scores.parquet` directory.

@@ -60,6 +60,10 @@ For phrases **A** and **B** with unit vectors \(u_A, u_B\):
 
 per talk. This is a **difference of mean cosines**, not a cosine of a difference vector. It answers a **comparative** question: “Which direction does this talk’s chunk cloud lean toward, **A** or **B**, in this geometry?”
 
+### 3.4 Phrase-aligned exemplar passages (Showpiece / Contrast)
+
+When **`chunks_scored.parquet`** and phrase vectors \(u_A, u_B\) are available, the app can show one **quoted chunk per exemplar talk** chosen **inside that talk** by **argmax** (toward A) or **argmin** (toward B) of \(\cos(z, u_A) - \cos(z, u_B)\) over chunk embeddings \(z\), using the **same model and pooling** as the pipeline (`best_contrast_chunks.py`). This is **not** the same rule as “swing” highlights in the Chunk insights tab (those use precomputed net prescriptive vs invitational scores). If phrase-aligned data are missing, the UI falls back to swing excerpts.
+
 ---
 
 ## 4. Graphics: OLS and GAM on year
@@ -148,6 +152,8 @@ Some cards fit `lm(y ~ I(year >= split), weights = n_chunks)`.
 |--------|-------------------------|
 | Chunking, poles, Parquet outputs | `analysis/python/gc_chunk_embed_pipeline.py` |
 | Phrase embedding for Shiny | `analysis/python/embed_query_phrase.py` |
+| Phrase-aligned exemplar chunks | `analysis/python/best_contrast_chunks.py` |
+| JSONL → talk Parquet (optional corpus) | `analysis/python/jsonl_to_talks_parquet.py` |
 | Figures + RDS sync | `analysis/plot_gc_chunk_embed_results.R` |
 | Explorer, custom pole, contrast UI | `analysis/shiny_gc_family/app.R` |
 

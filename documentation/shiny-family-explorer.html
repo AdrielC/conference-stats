@@ -97,8 +97,8 @@
       </p>
       <pre><code>shiny::runApp("analysis/shiny_gc_family", launch.browser = TRUE)</code></pre>
       <p>
-        The app works offline once bundled: plots in <span class="mono">www/</span>, tables in <span class="mono">data/</span>.
-        Rebuild plots and data with <span class="mono">Rscript analysis/plot_gc_chunk_embed_results.R</span>.
+        The app works offline for core tabs: plots in <span class="mono">www/</span>, core scores in <span class="mono">data/</span>.
+        Rebuild with <span class="mono">Rscript analysis/plot_gc_chunk_embed_results.R</span> (syncs optional embedding files from the Python pipeline; those sidecars are gitignored — run the script after cloning if you need <strong>Custom pole</strong> or <strong>Contrast</strong>).
       </p>
     </section>
 
@@ -114,9 +114,16 @@
     <section>
       <h2>Custom pole tab (your phrase)</h2>
       <p>
-        Type any short phrase; with <strong>Python</strong> and bundled <span class="mono">talk_emb_sums.rds</span> +
-        <span class="mono">subword_idf.npy</span> (from the updated embedding pipeline + <span class="mono">plot_gc_chunk_embed_results.R</span>),
-        the app embeds your text the same way as the corpus and plots <strong>mean cosine vs year</strong>. This is semantic similarity, not literal keyword counts.
+        Type any short phrase; with <strong>Python</strong> and synced <span class="mono">talk_emb_sums.rds</span> +
+        <span class="mono">subword_idf.npy</span> + <span class="mono">pipeline_meta.json</span> (embedding pipeline + <span class="mono">plot_gc_chunk_embed_results.R</span>),
+        the app embeds your text the same way as the corpus and plots <strong>mean cosine vs year</strong>. Semantic similarity, not literal keyword counts.
+      </p>
+    </section>
+
+    <section>
+      <h2>Contrast &amp; exemplar quotes</h2>
+      <p>
+        <strong>Contrast</strong> compares two phrases (A − B) per talk. Exemplar cards prefer a <strong>phrase-aligned</strong> chunk when <span class="mono">chunks_scored.parquet</span> is in <span class="mono">data/</span> and Python can run (same geometry as the pipeline); otherwise they use short <strong>swing</strong> snippets from Chunk insights.
       </p>
     </section>
 

@@ -58,3 +58,10 @@ po/*~
 
 # RStudio Connect folder
 rsconnect/
+
+# Shiny app: optional pipeline outputs synced by plot_gc_chunk_embed_results.R
+# (Custom pole, phrase-aligned exemplars). Core scores stay tracked.
+analysis/shiny_gc_family/data/talk_emb_sums.rds
+analysis/shiny_gc_family/data/subword_idf.npy
+analysis/shiny_gc_family/data/pipeline_meta.json
+analysis/shiny_gc_family/data/chunks_scored.parquet

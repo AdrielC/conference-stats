@@ -423,7 +423,7 @@ if (file.exists(ch_path) && requireNamespace("stringr", quietly = TRUE)) {
   )
 }
 
-## Sync figures + stats into Shiny app folder (for family demo / repo)
+## Sync figures + stats into Shiny app folder (bundled explorer / repo)
 if (dir.exists(shiny_www) && dir.exists(shiny_data)) {
   pngs <- list.files(out_dir, pattern = "\\.png$", full.names = TRUE)
   if (length(pngs)) {

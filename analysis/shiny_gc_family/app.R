@@ -1,4 +1,4 @@
-# ---- General Conference — family-friendly Shiny explorer ----
+# ---- General Conference — semantic trends Shiny explorer (NLP / exploratory stats) ----
 # Run from R:  shiny::runApp("analysis/shiny_gc_family", launch.browser = TRUE)
 # Or: setwd to this folder then shiny::runApp(".")
 
@@ -441,7 +441,7 @@ ui <- tagList(
   footer = tags$footer(
     class = "text-center text-muted py-4 mt-5 border-top small px-3",
     tags$p(
-      "This app is a personal research demo for friends and family. ",
+      "Exploratory analysis of wording patterns over time in a public corpus (embeddings / statistics). ",
       "It is ",
       tags$strong("not"),
       " affiliated with or endorsed by The Church of Jesus Christ of Latter-day Saints."
@@ -966,7 +966,7 @@ ui <- tagList(
           "- **Not theology** — geometry of language in one embedding model.\n",
           "- **Regex exemplars** steer what “prescriptive” means; different examples move the needle.\n",
           "- **Chunk size** matters; we picked a defensible default for BGE’s context length.\n",
-          "- **Family demo** — if an uncle says “but Elder so-and-so in ’82…”, that’s qualitative texture our average line will never capture."
+          "- **Aggregate vs detail** — individual talks, speakers, and years can contradict any corpus-wide smooth; qualitative reading always matters."
         ))
       )
     )
@@ -975,13 +975,15 @@ ui <- tagList(
   nav_panel(
     tags$span(icon("heart"), " About"),
     card(
-      card_header("For family & friends"),
+      card_header("About"),
       card_body(
         markdown(paste0(
-          "This app bundles outputs from a research side project on **language change** in General Conference. ",
-          "If slides or Thanksgiving conversation ever need a chart — you’ve got it.\n\n",
+          "This app bundles **NLP-style embeddings** and simple **time-series / exploratory statistics** on General Conference talks in a public corpus — ",
+          "interesting patterns in language over time, not theology or institutional claims.\n\n",
           "**Repo:** `conference-stats` on GitHub (same project as the Parquet corpus helpers).\n\n",
-          "Made with R **Shiny**, **ggplot2**, **plotly**, and a lot of punctuation typed next to embeddings."
+          "Made with R **Shiny**, **ggplot2**, **plotly**, and **mgcv**. Methods and statistical caveats: ",
+          "[`documentation/methods-and-statistical-inference.md`]",
+          "(https://github.com/AdrielC/conference-stats/blob/main/documentation/methods-and-statistical-inference.md)."
         ))
       )
     )

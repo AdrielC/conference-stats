@@ -1,4 +1,4 @@
-# General Conference — family Shiny explorer
+# General Conference — semantic trends Shiny explorer
 
 ---
 

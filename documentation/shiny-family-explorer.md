@@ -1,4 +1,4 @@
-# General Conference semantic explorer (family Shiny app)
+# General Conference semantic explorer (Shiny app)
 
 This repo includes a small **R Shiny** app under `analysis/shiny_gc_family/`: static plots in **Gallery**, an interactive year vs. score chart in **Explore**, methodology in **Methods**, and **Chunk insights** (when `data/chunk_highlights.rds` is present) to inspect which text segments drove each talk’s score.
 

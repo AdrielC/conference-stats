@@ -157,4 +157,4 @@ Regenerating `talk_emb_sums.rds`, `subword_idf.npy`, and related files after pip
 
 ## 9. Summary
 
-The pipeline is **internally coherent** and **reproducible** under fixed choices (model, chunking, poles, phrases). Classical *p*-values in the app are best read as **exploratory alarms**: they flag consistency with simple models more than they certify **independent, causal, or ecclesiastical** claims. For stronger inference, extend toward **dependent-data models**, **topic controls**, and **multiplicity-aware** design — while keeping the current interface useful for transparent, family-scale exploration.
+The pipeline is **internally coherent** and **reproducible** under fixed choices (model, chunking, poles, phrases). Classical *p*-values in the app are best read as **exploratory alarms**: they flag consistency with simple models more than they certify **independent, causal, or ecclesiastical** claims. For stronger inference, extend toward **dependent-data models**, **topic controls**, and **multiplicity-aware** design — while keeping the current interface useful for transparent, exploratory analysis.

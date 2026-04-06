@@ -34,7 +34,10 @@ If analysis/data/gc_chunk_embed/chunks_scored.parquet exists next
 to talk_scores.parquet, the same script also builds
 analysis/shiny_gc_family/data/chunk_highlights.rds — used by the
 **Chunk insights** tab (top prescriptive / most invitational /
-highest-leverage chunks per talk).
+highest-leverage chunks per talk). The plot script also copies
+`chunks_scored.parquet` into this folder when present; the **Showpiece**
+and **Contrast** tabs use it with Python to pick **phrase-aligned**
+exemplar passages (cos(A)−cos(B) on chunks) after you embed two phrases.
 
 The app runs offline: images live in www/ and scores in data/.
 No Python or Parquet is required to open most of the Shiny UI.

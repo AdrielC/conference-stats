@@ -460,6 +460,15 @@ if (dir.exists(shiny_www) && dir.exists(shiny_data)) {
     invisible(file.copy(meta_js, file.path(shiny_data, "pipeline_meta.json"), overwrite = TRUE))
     message("Synced pipeline_meta.json")
   }
+  ch_scored <- file.path(par_dir, "chunks_scored.parquet")
+  if (file.exists(ch_scored)) {
+    invisible(file.copy(ch_scored, file.path(shiny_data, "chunks_scored.parquet"), overwrite = TRUE))
+    message("Synced chunks_scored.parquet (phrase-aligned contrast exemplars).")
+  } else {
+    message(
+      "No chunks_scored.parquet next to talk_scores — phrase-aligned exemplar excerpts need a full pipeline run."
+    )
+  }
   message("Synced → analysis/shiny_gc_family/{www,data}/")
 }
 

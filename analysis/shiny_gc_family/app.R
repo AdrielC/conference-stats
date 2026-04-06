@@ -44,6 +44,10 @@ if (is.null(pipe_meta$model) || !nzchar(as.character(pipe_meta$model))) {
 }
 py_embed_script <- normalizePath(file.path(app_dir, "..", "python", "embed_query_phrase.py"), mustWork = FALSE)
 has_py_embed_script <- nzchar(py_embed_script) && file.exists(py_embed_script)
+chunks_scored_path <- file.path(app_dir, "data", "chunks_scored.parquet")
+has_chunks_scored <- file.exists(chunks_scored_path)
+py_contrast_script <- normalizePath(file.path(app_dir, "..", "python", "best_contrast_chunks.py"), mustWork = FALSE)
+has_py_contrast_script <- nzchar(py_contrast_script) && file.exists(py_contrast_script)
 s_cols_custom <- if (isTRUE(has_custom_pole_bundle)) {
   nm <- names(talk_emb_sums_tbl)
   sc <- nm[grepl("^s_[0-9]+$", nm)]
@@ -317,8 +321,11 @@ pick_one_highlight <- function(talk_id) {
   hi[1L, , drop = FALSE]
 }
 
-showpiece_excerpt_card <- function(talk_id, year, pole_contrast, border_hex) {
-  row <- pick_one_highlight(talk_id)
+showpiece_excerpt_card <- function(talk_id, year, pole_contrast, border_hex, rag = NULL) {
+  use_rag <- is.list(rag) &&
+    !is.null(rag$text_excerpt) &&
+    nzchar(as.character(rag$text_excerpt))
+  row <- if (!isTRUE(use_rag)) pick_one_highlight(talk_id) else NULL
   tags$div(
     class = "card mb-3 border-0 shadow-sm",
     style = sprintf("border-left: 4px solid %s !important;", border_hex),
@@ -329,13 +336,48 @@ showpiece_excerpt_card <- function(talk_id, year, pole_contrast, border_hex) {
         tags$code(class = "user-select-all", as.character(talk_id)),
         " · ",
         year,
-        " · Δ = ",
+        " · Talk Δ = ",
         tags$strong(sprintf("%+.4f", pole_contrast))
       ),
-      if (is.null(row)) {
+      if (isTRUE(use_rag)) {
+        k <- as.character(rag$kind)[1L]
+        ca <- as.numeric(rag$cos_a)
+        cb <- as.numeric(rag$cos_b)
+        dch <- as.numeric(rag$delta)
+        dir_lbl <- if (identical(k, "toward_a")) {
+          "highest cos(A) − cos(B) in this talk"
+        } else {
+          "lowest cos(A) − cos(B) in this talk"
+        }
+        tagList(
+          tags$p(
+            class = "small text-muted mb-0",
+            "Phrase-aligned chunk (",
+            tags$strong(dir_lbl),
+            "; segment ",
+            as.character(rag$chunk_idx),
+            ", cos A ",
+            sprintf("%.3f", ca),
+            ", cos B ",
+            sprintf("%.3f", cb),
+            ", chunk Δ ",
+            sprintf("%+.3f", dch),
+            "). Same embedding + tf–idf pooling as the scores."
+          ),
+          tags$blockquote(
+            class = "mt-2 mb-0 ps-3",
+            style = "border-left: 3px solid #cbd5e1; font-family: Georgia, serif; font-size: 0.95rem;",
+            tags$p(class = "mb-0", as.character(rag$text_excerpt))
+          )
+        )
+      } else if (is.null(row)) {
         tags$p(
           class = "small fst-italic text-muted mb-0",
-          "No bundled chunk excerpt (build chunk_highlights.rds via plot_gc_chunk_embed_results.R)."
+          if (isTRUE(has_chunks_scored) && isTRUE(has_py_contrast_script)) {
+            "No phrase-aligned chunk returned for this talk (check Python logs) or no swing excerpt — run plot_gc_chunk_embed_results.R after the pipeline."
+          } else {
+            "Phrase-aligned chunks need data/chunks_scored.parquet plus Python; until then, swing highlights from Chunk insights (if bundled) appear here."
+          }
         )
       } else {
         tagList(
@@ -998,6 +1040,8 @@ server <- function(input, output, session) {
   showpiece_state <- reactiveValues(
     mean_cos_a = NULL,
     mean_cos_b = NULL,
+    vec_a = NULL,
+    vec_b = NULL,
     phrase_a = NULL,
     phrase_b = NULL,
     err = ""
@@ -1012,6 +1056,73 @@ server <- function(input, output, session) {
       py <- Sys.which("python")
     }
     py
+  }
+
+  fetch_phrase_aligned_excerpts <- function(toward_a, toward_b) {
+    va <- showpiece_state$vec_a
+    vb <- showpiece_state$vec_b
+    if (is.null(va) || is.null(vb) || length(va) != 384L || length(vb) != 384L) {
+      return(NULL)
+    }
+    if (!isTRUE(has_chunks_scored) || !isTRUE(has_py_contrast_script)) {
+      return(NULL)
+    }
+    if ((is.null(toward_a) || nrow(toward_a) < 1L) && (is.null(toward_b) || nrow(toward_b) < 1L)) {
+      return(NULL)
+    }
+    py <- resolve_embed_python()
+    if (!nzchar(py)) {
+      return(NULL)
+    }
+    qa <- lapply(seq_len(nrow(toward_a)), function(i) {
+      list(talk_id = as.character(toward_a$talk_id[[i]]), kind = "toward_a")
+    })
+    qb <- lapply(seq_len(nrow(toward_b)), function(i) {
+      list(talk_id = as.character(toward_b$talk_id[[i]]), kind = "toward_b")
+    })
+    queries <- c(qa, qb)
+    qf <- tempfile(fileext = ".json")
+    uaf <- tempfile(fileext = ".json")
+    ubf <- tempfile(fileext = ".json")
+    errf <- tempfile(fileext = ".log")
+    on.exit(unlink(c(qf, uaf, ubf, errf)), add = FALSE)
+    jsonlite::write_json(queries, qf, auto_unbox = TRUE)
+    jsonlite::write_json(as.numeric(va), uaf, auto_unbox = TRUE)
+    jsonlite::write_json(as.numeric(vb), ubf, auto_unbox = TRUE)
+    scr <- normalizePath(py_contrast_script, winslash = "/", mustWork = TRUE)
+    idf_abs <- normalizePath(idf_bundle_path, winslash = "/", mustWork = TRUE)
+    ch_abs <- normalizePath(chunks_scored_path, winslash = "/", mustWork = TRUE)
+    model <- as.character(pipe_meta$model)
+    args <- c(
+      scr,
+      "--chunks", ch_abs,
+      "--idf", idf_abs,
+      "--model", model,
+      "--ua-json", normalizePath(uaf, winslash = "/", mustWork = TRUE),
+      "--ub-json", normalizePath(ubf, winslash = "/", mustWork = TRUE),
+      "--queries-json", normalizePath(qf, winslash = "/", mustWork = TRUE)
+    )
+    out <- suppressWarnings(system2(py, args = args, stdout = TRUE, stderr = errf))
+    st <- attr(out, "status")
+    if (!is.null(st) && !is.na(st) && st != 0L) {
+      return(NULL)
+    }
+    js <- tryCatch(
+      jsonlite::fromJSON(paste(out, collapse = "\n"), simplifyVector = FALSE),
+      error = function(e) NULL
+    )
+    if (!is.list(js) || length(js) < 1L) {
+      return(NULL)
+    }
+    mp <- list()
+    for (z in js) {
+      if (!is.list(z) || is.null(z$talk_id) || is.null(z$kind)) {
+        next
+      }
+      key <- paste(as.character(z$talk_id), as.character(z$kind), sep = "__")
+      mp[[key]] <- z
+    }
+    mp
   }
 
   two_pole_finish_showpiece <- function(pha, phb) {
@@ -1043,6 +1154,8 @@ server <- function(input, output, session) {
           mcb <- as.numeric(S %*% matrix(rb$vec, ncol = 1L)) / talk_emb_sums_tbl$n_chunks
           showpiece_state$mean_cos_a <- mca
           showpiece_state$mean_cos_b <- mcb
+          showpiece_state$vec_a <- as.numeric(ra$vec)
+          showpiece_state$vec_b <- as.numeric(rb$vec)
           showpiece_state$phrase_a <- pha
           showpiece_state$phrase_b <- phb
           st$ok <- TRUE
@@ -1059,6 +1172,8 @@ server <- function(input, output, session) {
     } else {
       showpiece_state$mean_cos_a <- NULL
       showpiece_state$mean_cos_b <- NULL
+      showpiece_state$vec_a <- NULL
+      showpiece_state$vec_b <- NULL
       showpiece_state$phrase_a <- NULL
       showpiece_state$phrase_b <- NULL
       showpiece_state$err <- res$err
@@ -1671,6 +1786,7 @@ server <- function(input, output, session) {
     toward_b <- d |>
       arrange(.data$pole_contrast, .data$year) |>
       slice_head(n = 3L)
+    rag_map <- fetch_phrase_aligned_excerpts(toward_a, toward_b)
     col_a <- "#742d2d"
     col_b <- "#276749"
     card(
@@ -1682,7 +1798,18 @@ server <- function(input, output, session) {
           tags$strong(style = sprintf("color:%s;", col_a), "A"),
           " minus mean cosine to ",
           tags$strong(style = sprintf("color:%s;", col_b), "B"),
-          ". Higher ⇒ diction/chunk semantics lean toward **A** in this embedding geometry."
+          ". Higher ⇒ diction/chunk semantics lean toward **A** in this embedding geometry.",
+          if (is.null(rag_map)) {
+            tagList(
+              " Excerpts below use **swing** highlights unless ",
+              tags$code("data/chunks_scored.parquet"),
+              " and Python are available (then each card picks the chunk that best matches your A vs B contrast)."
+            )
+          } else {
+            tags$span(
+              " Excerpts are **phrase-aligned** (per-talk argmax/min of cos(A)−cos(B) on segments)."
+            )
+          }
         ),
         layout_columns(
           col_widths = c(12, 12),
@@ -1691,7 +1818,9 @@ server <- function(input, output, session) {
             tags$p(class = "small text-muted", tags$code(pa)),
             lapply(seq_len(nrow(toward_a)), function(i) {
               r <- toward_a[i, , drop = FALSE]
-              showpiece_excerpt_card(r$talk_id, r$year, r$pole_contrast, col_a)
+              tid <- as.character(r$talk_id)
+              rk <- if (!is.null(rag_map)) rag_map[[paste(tid, "toward_a", sep = "__")]] else NULL
+              showpiece_excerpt_card(r$talk_id, r$year, r$pole_contrast, col_a, rk)
             })
           ),
           tags$div(
@@ -1699,7 +1828,9 @@ server <- function(input, output, session) {
             tags$p(class = "small text-muted", tags$code(pb)),
             lapply(seq_len(nrow(toward_b)), function(i) {
               r <- toward_b[i, , drop = FALSE]
-              showpiece_excerpt_card(r$talk_id, r$year, r$pole_contrast, col_b)
+              tid <- as.character(r$talk_id)
+              rk <- if (!is.null(rag_map)) rag_map[[paste(tid, "toward_b", sep = "__")]] else NULL
+              showpiece_excerpt_card(r$talk_id, r$year, r$pole_contrast, col_b, rk)
             })
           )
         )
@@ -1901,6 +2032,7 @@ server <- function(input, output, session) {
     toward_b <- d |>
       arrange(.data$pole_contrast, .data$year) |>
       slice_head(n = 3L)
+    rag_map <- fetch_phrase_aligned_excerpts(toward_a, toward_b)
     col_a <- "#742d2d"
     col_b <- "#276749"
     card(
@@ -1908,7 +2040,16 @@ server <- function(input, output, session) {
       card_body(
         tags$p(
           class = "small text-muted",
-          "Extremes within **this tab’s** year window. Quotes are inspector **swing** chunks (not phrase-picked)."
+          "Extremes within **this tab’s** year window.",
+          if (is.null(rag_map)) {
+            tagList(
+              " Quotes use **swing** inspector chunks unless ",
+              tags$code("chunks_scored.parquet"),
+              " is synced (plot script) and Python can run phrase-aligned picks."
+            )
+          } else {
+            tags$span(" Quotes are **phrase-aligned** to your A/B vectors where available.")
+          }
         ),
         layout_columns(
           col_widths = c(12, 12),
@@ -1917,7 +2058,9 @@ server <- function(input, output, session) {
             tags$p(class = "small text-muted", tags$code(pa)),
             lapply(seq_len(nrow(toward_a)), function(i) {
               r <- toward_a[i, , drop = FALSE]
-              showpiece_excerpt_card(r$talk_id, r$year, r$pole_contrast, col_a)
+              tid <- as.character(r$talk_id)
+              rk <- if (!is.null(rag_map)) rag_map[[paste(tid, "toward_a", sep = "__")]] else NULL
+              showpiece_excerpt_card(r$talk_id, r$year, r$pole_contrast, col_a, rk)
             })
           ),
           tags$div(
@@ -1925,7 +2068,9 @@ server <- function(input, output, session) {
             tags$p(class = "small text-muted", tags$code(pb)),
             lapply(seq_len(nrow(toward_b)), function(i) {
               r <- toward_b[i, , drop = FALSE]
-              showpiece_excerpt_card(r$talk_id, r$year, r$pole_contrast, col_b)
+              tid <- as.character(r$talk_id)
+              rk <- if (!is.null(rag_map)) rag_map[[paste(tid, "toward_b", sep = "__")]] else NULL
+              showpiece_excerpt_card(r$talk_id, r$year, r$pole_contrast, col_b, rk)
             })
           )
         )

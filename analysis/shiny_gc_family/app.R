@@ -297,16 +297,18 @@ call_embed_phrase <- function(phrase, py, scr_abs, idf_abs, model) {
 }
 
 ## One swing (or fallback) highlight row for a talk_id — for showpiece exemplars.
+## dplyr `filter()` matches bare names to columns first — `talk_id` equals the data
+## column on the RHS, so the join was broken and every exemplar showed the same excerpt.
 pick_one_highlight <- function(talk_id) {
-  talk_id <- as.character(talk_id)[1L]
+  tid_key <- as.character(talk_id)[1L]
   if (!isTRUE(has_chunk_highlights)) {
     return(NULL)
   }
   hi <- chunk_highlights |>
-    filter(as.character(.data$talk_id) == talk_id, .data$kind == "swing")
+    filter(as.character(.data$talk_id) == tid_key, .data$kind == "swing")
   if (nrow(hi) < 1L) {
     hi <- chunk_highlights |>
-      filter(as.character(.data$talk_id) == talk_id) |>
+      filter(as.character(.data$talk_id) == tid_key) |>
       slice_head(n = 1L)
   }
   if (nrow(hi) < 1L) {

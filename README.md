@@ -7,6 +7,7 @@ Statistics and semantic analysis of LDS General Conference talks (1971–2021 co
 Files live under **`documentation/`** (not `docs/`, which is reserved for pkgdown build output in `.gitignore`).
 
 - **Markdown guide:** [`documentation/shiny-family-explorer.md`](documentation/shiny-family-explorer.md) — how to run the app, rebuild data, and **share a renderable HTML link on a phone** (GitHub raw URLs do not run HTML; use HTMLPreview or GitHub Pages — explained there).
+- **Methods & statistical inference:** [`documentation/methods-and-statistical-inference.md`](documentation/methods-and-statistical-inference.md) — what the embeddings measure, how OLS/GAM and *p*-values are used, and limits of interpretation (exploratory use, non-independence of talks, etc.).
 - **Standalone HTML:** [`documentation/shiny-family-explorer.html`](documentation/shiny-family-explorer.html) — open locally, or use  
   [HTMLPreview for this file on `main`](https://htmlpreview.github.io/?https://raw.githubusercontent.com/AdrielC/conference-stats/main/documentation/shiny-family-explorer.html).
 - **Run instructions:** [`analysis/shiny_gc_family/HOW_TO_RUN.md`](analysis/shiny_gc_family/HOW_TO_RUN.md).

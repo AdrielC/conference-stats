@@ -1372,7 +1372,7 @@ server <- function(input, output, session) {
           list(
             text = sprintf(
               paste0(
-                "<b>OLS line + 95% CI</b><br>",
+                "<b>OLS line + 95%% CI</b><br>",
                 "Pearson <i>r</i> (year, score) = %.3f<br>",
                 "two-sided <i>p</i> = %s"
               ),
@@ -1619,7 +1619,7 @@ server <- function(input, output, session) {
           list(
             text = sprintf(
               paste0(
-                "<b>OLS line + 95% CI</b><br>",
+                "<b>OLS line + 95%% CI</b><br>",
                 "Pearson <i>r</i> (year, Δ) = %.3f<br>",
                 "two-sided <i>p</i> = %s"
               ),
@@ -1849,7 +1849,7 @@ server <- function(input, output, session) {
           list(
             text = sprintf(
               paste0(
-                "<b>OLS line + 95% CI</b><br>",
+                "<b>OLS line + 95%% CI</b><br>",
                 "Pearson <i>r</i> (year, Δ) = %.3f<br>",
                 "two-sided <i>p</i> = %s"
               ),

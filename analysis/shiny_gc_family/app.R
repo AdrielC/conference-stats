@@ -2607,11 +2607,45 @@ server <- function(input, output, session) {
     )
     g <- ggplot(a$plot_df, aes(x = y, color = period)) +
       geom_density(linewidth = 0.95) +
-      scale_color_manual(values = c("#2c5282", "#276749")) +
-      labs(x = yl, y = "Density", color = NULL, title = "Smoothed distributions") +
+      scale_color_manual(
+        values = c("#2c5282", "#276749"),
+        name = "Period"
+      ) +
+      labs(
+        title = "Smoothed distributions",
+        subtitle = yl,
+        x = "Talk-level score",
+        y = "Density"
+      ) +
       theme_minimal(base_size = 13) +
-      theme(legend.position = "bottom")
-    plotly::ggplotly(g) |> plotly::layout(hovermode = "closest")
+      theme(
+        plot.subtitle = element_text(size = 11, color = "gray35", margin = margin(b = 10)),
+        legend.position = "bottom",
+        legend.direction = "horizontal",
+        legend.box = "horizontal",
+        legend.spacing.x = unit(10, "pt"),
+        legend.margin = margin(t = 12),
+        plot.margin = margin(b = 6, t = 4)
+      )
+    plt <- plotly::ggplotly(g, tooltip = c("x", "colour"))
+    plotly::layout(
+      plt,
+      hovermode = "closest",
+      margin = list(l = 52, r = 28, t = 56, b = 108),
+      legend = list(
+        orientation = "h",
+        x = 0.5,
+        xanchor = "center",
+        y = -0.34,
+        yanchor = "top",
+        yref = "paper",
+        itemwidth = 30,
+        tracegroupgap = 14,
+        font = list(size = 12)
+      ),
+      xaxis = list(title = list(standoff = 14, font = list(size = 12))),
+      yaxis = list(title = list(standoff = 10))
+    )
   })
 
   output$plt_tt_meanci <- renderPlotly({

@@ -690,9 +690,9 @@ ui <- tagList(
           "tt_metric",
           "Score column",
           choices = c(
-            "mean_net_presc" = "Net prescriptive (mean cos presc − cos gentle)",
-            "mean_cos_presc" = "Mean cosine → prescriptive pole",
-            "mean_cos_gentle" = "Mean cosine → invitational pole"
+            "Net prescriptive (mean cos presc − cos gentle)" = "mean_net_presc",
+            "Mean cosine → prescriptive pole" = "mean_cos_presc",
+            "Mean cosine → invitational pole" = "mean_cos_gentle"
           ),
           selected = "mean_net_presc",
           width = "100%"

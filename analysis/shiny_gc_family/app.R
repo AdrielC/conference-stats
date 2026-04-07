@@ -728,6 +728,7 @@ ui <- tagList(
       )
     ),
     uiOutput("tt_validation_msg"),
+    uiOutput("tt_sig_banner"),
     card(
       card_header("Test summary"),
       uiOutput("tt_summary_md")
@@ -2475,6 +2476,64 @@ server <- function(input, output, session) {
         yaxis = list(visible = FALSE, range = c(-1, 1))
       )
   }
+
+  output$tt_sig_banner <- renderUI({
+    a <- tt_analysis()
+    if (!isTRUE(a$ok)) {
+      return(invisible(NULL))
+    }
+    pv <- suppressWarnings(as.numeric(a$tt$p.value))
+    if (length(pv) != 1L || !is.finite(pv)) {
+      return(invisible(NULL))
+    }
+    alpha <- 0.05
+    if (pv >= alpha) {
+      return(invisible(NULL))
+    }
+    tags$div(
+      class = "alert alert-success border border-success mb-3 shadow-sm",
+      role = "alert",
+      tags$h4(
+        class = "alert-heading mb-2",
+        style = "font-size: 1.35rem; font-weight: 700;",
+        "Statistically significant difference between periods"
+      ),
+      tags$p(
+        class = "mb-2",
+        tags$strong("What the p-value is: "),
+        "the two-sided ",
+        tags$strong("Welch "),
+        tags$em("t"),
+        " test p-value for comparing the ",
+        tags$strong("mean"),
+        " of your score in period 1 vs period 2 (unequal variances allowed). ",
+        "Under the usual assumptions of that test, it approximates how often you would see a difference in means at least this large ",
+        "if both periods had the ",
+        tags$strong("same"),
+        " underlying mean (a frequentist null, not a causal story)."
+      ),
+      tags$p(
+        class = "mb-2",
+        tags$strong("What “significant” means here: "),
+        "with α = ",
+        sprintf("%g", alpha),
+        ", ",
+        tags$strong("p < α"),
+        " is often read as a ",
+        tags$strong("statistically significant"),
+        " shift in ",
+        tags$strong("mean score"),
+        " between the two year bands — for this metric, this corpus, and this test. ",
+        "It supports “the averages differ,” not why (topics, speakers, or language beyond this pipeline)."
+      ),
+      tags$p(
+        class = "small text-muted mb-0",
+        tags$em("Caveat: "),
+        "General Conference talks are not independent draws (same leaders, recurring themes). ",
+        "Treat the *p*-value as **exploratory** support for a mean shift, not a publishable causal conclusion."
+      )
+    )
+  })
 
   output$tt_summary_md <- renderUI({
     a <- tt_analysis()

@@ -6,7 +6,7 @@ Statistics and semantic analysis of LDS General Conference talks. The default bu
 
 | Doc | Contents |
 |-----|----------|
-| [`documentation/shiny-family-explorer.md`](documentation/shiny-family-explorer.md) | Shiny app, rebuilding data, sharing the HTML handout on mobile |
+| [`documentation/shiny-family-explorer.md`](documentation/shiny-family-explorer.md) | Shiny app (incl. **Compare periods** Welch *t* tab), rebuilding data, HTML handout |
 | [`documentation/methods-and-statistical-inference.md`](documentation/methods-and-statistical-inference.md) | Embeddings, scores, OLS/GAM, *p*-values, limits of interpretation |
 | [`analysis/shiny_gc_family/HOW_TO_RUN.md`](analysis/shiny_gc_family/HOW_TO_RUN.md) | Install packages and run the app |
 

@@ -259,6 +259,18 @@ early_late_significance_md <- function(d, y_col, split_yr) {
   paste(parts, collapse = "\n\n")
 }
 
+## Disjoint calendar-year check for two closed intervals [a1,a2], [b1,b2].
+year_ranges_disjoint <- function(a1, a2, b1, b2) {
+  a1 <- as.integer(a1)
+  a2 <- as.integer(a2)
+  b1 <- as.integer(b1)
+  b2 <- as.integer(b2)
+  if (a2 < a1 || b2 < b1) {
+    return(FALSE)
+  }
+  length(intersect(seq.int(a1, a2), seq.int(b1, b2))) == 0L
+}
+
 ## Run embed_query_phrase.py once; returns list(ok, vec | NULL, err).
 call_embed_phrase <- function(phrase, py, scr_abs, idf_abs, model) {
   phrase <- trimws(paste(phrase, collapse = "\n"))
@@ -512,7 +524,7 @@ ui <- tagList(
             "not prophecy or church policy.\n\n",
             "Use the tabs above: **Gallery** for the big charts, **Explore** for the interactive scatter, ",
             "**Custom pole** for your own phrase: decadal + era charts and **trend *p*-values** (needs Python + synced embedding data), ",
-            "**Chunk insights** to read passages that moved each talk’s score, and **Methods** for how it was built."
+            "**Chunk insights** to read passages that moved each talk’s score, **Compare periods** for a Welch *t* test between two year bands on one score, and **Methods** for how it was built."
           ))
         )
       )
@@ -647,6 +659,88 @@ ui <- tagList(
     card(
       card_header("Sample of filtered talks (first 500 rows)"),
       DTOutput("tbl")
+    )
+  ),
+
+  nav_panel(
+    tags$span(icon("balance-scale"), " Compare periods"),
+    card(
+      card_header("Welch two-sample *t* test (two year ranges)"),
+      card_body(
+        markdown(paste0(
+          "Pick **one** talk-level score (default: **net prescriptive** = mean chunk cosine to the prescriptive pole minus cosine to the invitational pole). ",
+          "Choose **two non-overlapping** conference-year ranges and the same **era** filters as elsewhere. ",
+          "We run **Welch’s *t* test** (unequal variances) on the two sets of talks and show **violin + box**, **density**, and **means with ~95% CI**."
+        ))
+      )
+    ),
+    layout_columns(
+      col_widths = c(12, 12),
+      card(
+        card_header("Outcome (one kind)"),
+        selectInput(
+          "tt_metric",
+          "Score column",
+          choices = c(
+            "mean_net_presc" = "Net prescriptive (mean cos presc − cos gentle)",
+            "mean_cos_presc" = "Mean cosine → prescriptive pole",
+            "mean_cos_gentle" = "Mean cosine → invitational pole"
+          ),
+          selected = "mean_net_presc",
+          width = "100%"
+        ),
+        checkboxGroupInput(
+          "tt_era_f",
+          "Era bands (talk must fall in one of these)",
+          choices = era_levels,
+          selected = era_levels,
+          inline = TRUE
+        )
+      ),
+      card(
+        card_header("Year ranges (must not overlap)"),
+        sliderInput(
+          "tt_p1",
+          "Period 1",
+          min = cust_yr_min,
+          max = cust_yr_max,
+          value = c(cust_yr_min, min(cust_yr_min + 19L, cust_yr_max)),
+          sep = "",
+          width = "100%"
+        ),
+        sliderInput(
+          "tt_p2",
+          "Period 2",
+          min = cust_yr_min,
+          max = cust_yr_max,
+          value = c(max(cust_yr_min + 20L, cust_yr_max - 20L), cust_yr_max),
+          sep = "",
+          width = "100%"
+        )
+      )
+    ),
+    uiOutput("tt_validation_msg"),
+    card(
+      card_header("Test summary"),
+      uiOutput("tt_summary_md")
+    ),
+    layout_columns(
+      col_widths = c(12, 12),
+      card(
+        class = "explore-plot-card",
+        card_header("Distribution by period (violin + box + jitter)"),
+        plotlyOutput("plt_tt_violin", height = "48vh")
+      ),
+      card(
+        class = "explore-plot-card",
+        card_header("Density (same score)"),
+        plotlyOutput("plt_tt_density", height = "48vh")
+      )
+    ),
+    card(
+      class = "explore-plot-card",
+      card_header("Group means with approximate 95% CI (single-sample, per period)"),
+      plotlyOutput("plt_tt_meanci", height = "40vh")
     )
   ),
 
@@ -997,7 +1091,8 @@ ui <- tagList(
           "7. **Trend:** `mgcv` GAM smooth on year in R; figures saved under `analysis/output/gc_chunk_embed/`.\n",
           "8. **Custom pole (Shiny tab):** Precomputed **sums of chunk embedding vectors** per talk plus frozen **subword IDF** let you embed any short phrase with Python and plot **mean cosine** vs year (same pooling as the main pipeline).\n",
           "9. **Showpiece:** embed **two** phrases and plot **(cosine to A) − (cosine to B)** vs year, with exemplar talks (quotes from the chunk inspector, not phrase-selected).\n",
-          "10. **1996–today / contrast tab:** same two-phrase machinery with a **dedicated year window** (default 1996–latest), **split-year** controls for early/late tests, and **explicit OLS lines** on scatter plots.\n\n",
+          "10. **1996–today / contrast tab:** same two-phrase machinery with a **dedicated year window** (default 1996–latest), **split-year** controls for early/late tests, and **explicit OLS lines** on scatter plots.\n",
+          "11. **Compare periods tab:** **Welch two-sample *t* test** on one talk-level score between **two disjoint year ranges** (default: net prescriptive), plus violin/box, densities, and per-period mean ± CI plots.\n\n",
           "The Python driver is `analysis/python/gc_chunk_embed_pipeline.py`. ",
           "A plain-language report lives in `analysis/prescriptive_chunks_embed_report.Rmd`."
         ))
@@ -2224,6 +2319,182 @@ server <- function(input, output, session) {
       )
     })
     tagList(Filter(Negate(is.null), pieces))
+  })
+
+  output$tt_validation_msg <- renderUI({
+    req(input$tt_p1, input$tt_p2)
+    p1 <- input$tt_p1
+    p2 <- input$tt_p2
+    if (!year_ranges_disjoint(p1[[1L]], p1[[2L]], p2[[1L]], p2[[2L]])) {
+      return(
+        card(
+          class = "border-warning mb-3",
+          card_body(
+            tags$p(
+              class = "mb-0 text-warning-emphasis",
+              "These year ranges share at least one calendar year. Use two disjoint bands (e.g. 1971–1990 and 2000–2021)."
+            )
+          )
+        )
+      )
+    }
+    invisible(NULL)
+  })
+
+  tt_analysis <- reactive({
+    req(input$tt_era_f)
+    req(input$tt_metric)
+    yc <- input$tt_metric
+    validate(need(yc %in% names(talk_scores), "Invalid score column."))
+    p1 <- input$tt_p1
+    p2 <- input$tt_p2
+    validate(need(
+      year_ranges_disjoint(p1[[1L]], p1[[2L]], p2[[1L]], p2[[2L]]),
+      "Disjoint year ranges required."
+    ))
+    base <- talk_scores |>
+      filter(.data$era %in% input$tt_era_f)
+    d1 <- base |>
+      filter(.data$year >= p1[[1L]], .data$year <= p1[[2L]])
+    d2 <- base |>
+      filter(.data$year >= p2[[1L]], .data$year <= p2[[2L]])
+    validate(need(nrow(d1) >= 2L && nrow(d2) >= 2L, "Need at least two talks in each period."))
+    y1 <- as.numeric(d1[[yc]])
+    y2 <- as.numeric(d2[[yc]])
+    y1 <- y1[is.finite(y1)]
+    y2 <- y2[is.finite(y2)]
+    validate(need(length(y1) >= 2L && length(y2) >= 2L, "Need at least two finite scores per period."))
+    tt <- stats::t.test(y1, y2)
+    lab1 <- paste0(as.integer(p1[[1L]]), "–", as.integer(p1[[2L]]))
+    lab2 <- paste0(as.integer(p2[[1L]]), "–", as.integer(p2[[2L]]))
+    plot_df <- bind_rows(
+      data.frame(period = lab1, y = y1, stringsAsFactors = FALSE),
+      data.frame(period = lab2, y = y2, stringsAsFactors = FALSE)
+    )
+    plot_df$period <- factor(plot_df$period, levels = c(lab1, lab2))
+    mns <- plot_df |>
+      group_by(.data$period) |>
+      summarise(
+        n = dplyr::n(),
+        mean = mean(.data$y),
+        se = stats::sd(.data$y) / sqrt(dplyr::n()),
+        .groups = "drop"
+      ) |>
+      mutate(
+        ymin = .data$mean - stats::qt(0.975, df = pmax(1L, .data$n - 1L)) * .data$se,
+        ymax = .data$mean + stats::qt(0.975, df = pmax(1L, .data$n - 1L)) * .data$se
+      )
+    list(
+      tt = tt,
+      plot_df = plot_df,
+      mns = mns,
+      lab1 = lab1,
+      lab2 = lab2,
+      y_col = yc,
+      d1 = d1,
+      d2 = d2,
+      y1 = y1,
+      y2 = y2
+    )
+  })
+
+  output$tt_summary_md <- renderUI({
+    a <- tryCatch(tt_analysis(), error = function(e) NULL)
+    if (is.null(a)) {
+      return(
+        card_body(
+          tags$p(class = "text-muted mb-0", "Adjust filters until the test runs (disjoint years, enough talks).")
+        )
+      )
+    }
+    tt <- a$tt
+    est <- unname(tt$estimate[[1L]])
+    ci_lo <- tt$conf.int[[1L]]
+    ci_hi <- tt$conf.int[[2L]]
+    card_body(
+      markdown(paste0(
+        "**Metric:** `", a$y_col, "` · **Period 1:** ", a$lab1, " (*n* = ", length(a$y1), ") · ",
+        "**Period 2:** ", a$lab2, " (*n* = ", length(a$y2), ")\n\n",
+        "**Welch two-sample *t* test** (R: `t.test(period1, period2)`). ",
+        "Estimated difference of means (**period 1 − period 2**) = **",
+        sprintf("%+.4f", est), "** with 95% CI [**",
+        sprintf("%.4f", ci_lo), ", ", sprintf("%.4f", ci_hi), "**]. ",
+        "*t* = ", sprintf("%.3f", unname(tt$statistic[[1L]])),
+        ", df ≈ ", sprintf("%.1f", unname(tt$parameter[[1L]])),
+        ", two-sided *p* = ", fmt_p_num(tt$p.value), ".\n\n",
+        "Group means: **", sprintf("%.4f", mean(a$y1)), "** (period 1) vs **",
+        sprintf("%.4f", mean(a$y2)), "** (period 2). ",
+        "Talks are **not** independent (speakers repeat); treat *p* as exploratory."
+      ))
+    )
+  })
+
+  output$plt_tt_violin <- renderPlotly({
+    a <- tryCatch(tt_analysis(), error = function(e) NULL)
+    if (is.null(a)) {
+      return(plotly_empty())
+    }
+    yl <- switch(
+      a$y_col,
+      mean_net_presc = "Net prescriptive score (talk mean)",
+      mean_cos_presc = "Mean cosine → prescriptive pole",
+      mean_cos_gentle = "Mean cosine → invitational pole",
+      "Score"
+    )
+    g <- ggplot(a$plot_df, aes(.data$period, .data$y, fill = .data$period)) +
+      geom_violin(alpha = 0.35, color = NA) +
+      geom_boxplot(width = 0.12, alpha = 0.85, outlier.alpha = 0.4, linewidth = 0.35) +
+      geom_jitter(width = 0.06, height = 0, alpha = 0.18, size = 0.35) +
+      scale_fill_manual(values = c("#2c5282", "#276749")) +
+      labs(x = NULL, y = yl, title = "Talk-level scores by period") +
+      theme_minimal(base_size = 13) +
+      theme(legend.position = "none")
+    ggplotly(g, tooltip = c("y")) |> plotly::layout(hovermode = "closest")
+  })
+
+  output$plt_tt_density <- renderPlotly({
+    a <- tryCatch(tt_analysis(), error = function(e) NULL)
+    if (is.null(a)) {
+      return(plotly_empty())
+    }
+    yl <- switch(
+      a$y_col,
+      mean_net_presc = "Net prescriptive score",
+      mean_cos_presc = "Mean cosine → prescriptive",
+      mean_cos_gentle = "Mean cosine → invitational",
+      "Score"
+    )
+    g <- ggplot(a$plot_df, aes(.data$y, color = .data$period)) +
+      geom_density(linewidth = 0.95) +
+      scale_color_manual(values = c("#2c5282", "#276749")) +
+      labs(x = yl, y = "Density", color = NULL, title = "Smoothed distributions") +
+      theme_minimal(base_size = 13) +
+      theme(legend.position = "bottom")
+    ggplotly(g) |> plotly::layout(hovermode = "closest")
+  })
+
+  output$plt_tt_meanci <- renderPlotly({
+    a <- tryCatch(tt_analysis(), error = function(e) NULL)
+    if (is.null(a)) {
+      return(plotly_empty())
+    }
+    m <- a$mns
+    g <- ggplot(m, aes(.data$period, .data$mean, fill = .data$period)) +
+      geom_col(alpha = 0.85, width = 0.55) +
+      geom_errorbar(
+        aes(ymin = .data$ymin, ymax = .data$ymax),
+        width = 0.12,
+        linewidth = 0.45
+      ) +
+      scale_fill_manual(values = c("#2c5282", "#276749")) +
+      labs(
+        x = NULL,
+        y = "Mean ± ~95% CI (t on talk means)",
+        title = "Independent-means style CIs per period (not the Welch difference CI)"
+      ) +
+      theme_minimal(base_size = 13) +
+      theme(legend.position = "none")
+    ggplotly(g) |> plotly::layout(hovermode = "x unified")
   })
 }
 

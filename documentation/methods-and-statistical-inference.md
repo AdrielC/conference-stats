@@ -60,7 +60,11 @@ For phrases **A** and **B** with unit vectors \(u_A, u_B\):
 
 per talk. This is a **difference of mean cosines**, not a cosine of a difference vector. It answers a **comparative** question: “Which direction does this talk’s chunk cloud lean toward, **A** or **B**, in this geometry?”
 
-### 3.4 Phrase-aligned exemplar passages (Showpiece / Contrast)
+### 3.4 Compare periods (Welch *t* test, two year bands)
+
+The **Compare periods** tab selects talks in **period 1** and **period 2** (closed year ranges that **do not overlap**), optionally filtered by the same **era** bands as elsewhere, and runs **`stats::t.test(y1, y2)`** (Welch, `var.equal = FALSE`) on one chosen column (`mean_net_presc` by default, or cosine columns). The reported **estimate** is mean(period 1) − mean(period 2); the **95% CI** is for that difference. Per-period error bars in the companion plot use the usual one-sample **t** interval on the **talk-level** mean in each group — they are **not** the same as the Welch difference CI. Interpretation caveats match §5.3 (non-independence of talks).
+
+### 3.5 Phrase-aligned exemplar passages (Showpiece / Contrast)
 
 When **`chunks_scored.parquet`** and phrase vectors \(u_A, u_B\) are available, the app can show one **quoted chunk per exemplar talk** chosen **inside that talk** by **argmax** (toward A) or **argmin** (toward B) of \(\cos(z, u_A) - \cos(z, u_B)\) over chunk embeddings \(z\), using the **same model and pooling** as the pipeline (`best_contrast_chunks.py`). This is **not** the same rule as “swing” highlights in the Chunk insights tab (those use precomputed net prescriptive vs invitational scores). If phrase-aligned data are missing, the UI falls back to swing excerpts.
 
@@ -155,6 +159,7 @@ Some cards fit `lm(y ~ I(year >= split), weights = n_chunks)`.
 | Phrase-aligned exemplar chunks | `analysis/python/best_contrast_chunks.py` |
 | JSONL → talk Parquet (optional corpus) | `analysis/python/jsonl_to_talks_parquet.py` |
 | Figures + RDS sync | `analysis/plot_gc_chunk_embed_results.R` |
+| Compare periods (Welch *t*) | `analysis/shiny_gc_family/app.R` |
 | Explorer, custom pole, contrast UI | `analysis/shiny_gc_family/app.R` |
 
 Regenerating `talk_emb_sums.rds`, `subword_idf.npy`, and related files after pipeline changes keeps **custom** and **contrast** tabs aligned with the frozen pooling and IDF used offline.

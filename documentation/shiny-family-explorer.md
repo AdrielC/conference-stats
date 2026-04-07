@@ -1,6 +1,6 @@
 # General Conference semantic explorer (Shiny app)
 
-The Shiny app lives in **`analysis/shiny_gc_family/`**: **Gallery** (static PNGs), **Explore** (interactive trend), **Methods**, **Chunk insights** (per-talk chunk quotes when `chunk_highlights.rds` is present), **Custom pole** (live phrase embedding), and **Contrast** (two phrases, A − B). Defaults use the **1971–2021** `generalconference`/`genconf` corpus scored by the Python embedding pipeline.
+The Shiny app lives in **`analysis/shiny_gc_family/`**: **Gallery** (static PNGs), **Explore** (interactive trend), **Compare periods** (Welch two-sample *t* test between two disjoint year ranges on one score — default net prescriptive — plus violin, density, and mean±CI plots), **Methods**, **Chunk insights** (per-talk chunk quotes when `chunk_highlights.rds` is present), **Custom pole** (live phrase embedding), and **Contrast** (two phrases, A − B). Defaults use the **1971–2021** `generalconference`/`genconf` corpus scored by the Python embedding pipeline.
 
 ## View the handout HTML on a phone
 

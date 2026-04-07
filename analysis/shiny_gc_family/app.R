@@ -2344,14 +2344,18 @@ server <- function(input, output, session) {
     if (is.null(er) || length(er) < 1L) {
       er <- era_levels
     }
-    if (is.null(met) || !nzchar(as.character(met))) {
+    if (is.null(met) || length(met) < 1L) {
+      met <- "mean_net_presc"
+    }
+    met <- as.character(met)
+    if (length(met) != 1L || !nzchar(met)) {
       met <- "mean_net_presc"
     }
     list(
       p1 = p1,
       p2 = p2,
       era_f = er,
-      metric = as.character(met)
+      metric = met
     )
   })
 
@@ -2377,7 +2381,7 @@ server <- function(input, output, session) {
 
   tt_analysis <- reactive({
     ti <- tt_inputs()
-    yc <- ti$metric
+    yc <- ti$metric[[1L]]
     validate(need(yc %in% names(talk_scores), "Invalid score column."))
     p1 <- ti$p1
     p2 <- ti$p2
@@ -2434,31 +2438,34 @@ server <- function(input, output, session) {
   output$tt_summary_md <- renderUI({
     a <- tt_analysis()
     tt <- a$tt
-    est <- unname(tt$estimate[[1L]])
-    ci_lo <- tt$conf.int[[1L]]
-    ci_hi <- tt$conf.int[[2L]]
-    card_body(
-      markdown(paste0(
-        "**Metric:** `", a$y_col, "` · **Period 1:** ", a$lab1, " (*n* = ", length(a$y1), ") · ",
-        "**Period 2:** ", a$lab2, " (*n* = ", length(a$y2), ")\n\n",
-        "**Welch two-sample *t* test** (R: `t.test(period1, period2)`). ",
-        "Estimated difference of means (**period 1 − period 2**) = **",
-        sprintf("%+.4f", est), "** with 95% CI [**",
-        sprintf("%.4f", ci_lo), ", ", sprintf("%.4f", ci_hi), "**]. ",
-        "*t* = ", sprintf("%.3f", unname(tt$statistic[[1L]])),
-        ", df ≈ ", sprintf("%.1f", unname(tt$parameter[[1L]])),
-        ", two-sided *p* = ", fmt_p_num(tt$p.value), ".\n\n",
-        "Group means: **", sprintf("%.4f", mean(a$y1)), "** (period 1) vs **",
-        sprintf("%.4f", mean(a$y2)), "** (period 2). ",
-        "Talks are **not** independent (speakers repeat); treat *p* as exploratory."
-      ))
+    est <- as.numeric(tt$estimate[[1L]])
+    ci_lo <- as.numeric(tt$conf.int[[1L]])
+    ci_hi <- as.numeric(tt$conf.int[[2L]])
+    ycol <- as.character(a$y_col)[[1L]]
+    md <- paste0(
+      "**Metric:** `", ycol, "` · **Period 1:** ", a$lab1, " (*n* = ", length(a$y1), ") · ",
+      "**Period 2:** ", a$lab2, " (*n* = ", length(a$y2), ")\n\n",
+      "**Welch two-sample *t* test** (R: `t.test(period1, period2)`). ",
+      "Estimated difference of means (**period 1 − period 2**) = **",
+      sprintf("%+.4f", est), "** with 95% CI [**",
+      sprintf("%.4f", ci_lo), ", ", sprintf("%.4f", ci_hi), "**]. ",
+      "*t* = ", sprintf("%.3f", as.numeric(tt$statistic[[1L]])),
+      ", df ≈ ", sprintf("%.1f", as.numeric(tt$parameter[[1L]])),
+      ", two-sided *p* = ", fmt_p_num(tt$p.value), ".\n\n",
+      "Group means: **", sprintf("%.4f", mean(a$y1)), "** (period 1) vs **",
+      sprintf("%.4f", mean(a$y2)), "** (period 2). ",
+      "Talks are **not** independent (speakers repeat); treat *p* as exploratory."
     )
+    ## shiny::markdown() / glue::trim expect a single character string (see commonmark path).
+    md <- paste(as.character(md), collapse = "\n")
+    card_body(markdown(md[1L]))
   })
 
   output$plt_tt_violin <- renderPlotly({
     a <- tt_analysis()
+    yc <- as.character(a$y_col)[[1L]]
     yl <- switch(
-      a$y_col,
+      yc,
       mean_net_presc = "Net prescriptive score (talk mean)",
       mean_cos_presc = "Mean cosine → prescriptive pole",
       mean_cos_gentle = "Mean cosine → invitational pole",
@@ -2477,8 +2484,9 @@ server <- function(input, output, session) {
 
   output$plt_tt_density <- renderPlotly({
     a <- tt_analysis()
+    yc <- as.character(a$y_col)[[1L]]
     yl <- switch(
-      a$y_col,
+      yc,
       mean_net_presc = "Net prescriptive score",
       mean_cos_presc = "Mean cosine → prescriptive",
       mean_cos_gentle = "Mean cosine → invitational",

@@ -2379,28 +2379,37 @@ server <- function(input, output, session) {
     invisible(NULL)
   })
 
+  ## No shiny::validate() here — it interacted with reactives/plotly and raised is.character(txt) errors.
   tt_analysis <- reactive({
     ti <- tt_inputs()
     yc <- ti$metric[[1L]]
-    validate(need(yc %in% names(talk_scores), "Invalid score column."))
     p1 <- ti$p1
     p2 <- ti$p2
-    validate(need(
-      year_ranges_disjoint(p1[[1L]], p1[[2L]], p2[[1L]], p2[[2L]]),
-      "Disjoint year ranges required."
-    ))
+    fail <- function(msg) {
+      list(ok = FALSE, err = as.character(msg)[1L])
+    }
+    if (!yc %in% names(talk_scores)) {
+      return(fail("Invalid score column."))
+    }
+    if (!year_ranges_disjoint(p1[[1L]], p1[[2L]], p2[[1L]], p2[[2L]])) {
+      return(fail("Disjoint year ranges required."))
+    }
     base <- talk_scores |>
       filter(.data$era %in% ti$era_f)
     d1 <- base |>
       filter(.data$year >= p1[[1L]], .data$year <= p1[[2L]])
     d2 <- base |>
       filter(.data$year >= p2[[1L]], .data$year <= p2[[2L]])
-    validate(need(nrow(d1) >= 2L && nrow(d2) >= 2L, "Need at least two talks in each period."))
+    if (nrow(d1) < 2L || nrow(d2) < 2L) {
+      return(fail("Need at least two talks in each period."))
+    }
     y1 <- as.numeric(d1[[yc]])
     y2 <- as.numeric(d2[[yc]])
     y1 <- y1[is.finite(y1)]
     y2 <- y2[is.finite(y2)]
-    validate(need(length(y1) >= 2L && length(y2) >= 2L, "Need at least two finite scores per period."))
+    if (length(y1) < 2L || length(y2) < 2L) {
+      return(fail("Need at least two finite scores per period."))
+    }
     tt <- stats::t.test(y1, y2)
     lab1 <- paste0(as.integer(p1[[1L]]), "–", as.integer(p1[[2L]]))
     lab2 <- paste0(as.integer(p2[[1L]]), "–", as.integer(p2[[2L]]))
@@ -2422,6 +2431,7 @@ server <- function(input, output, session) {
         ymax = .data$mean + stats::qt(0.975, df = pmax(1L, .data$n - 1L)) * .data$se
       )
     list(
+      ok = TRUE,
       tt = tt,
       plot_df = plot_df,
       mns = mns,
@@ -2435,8 +2445,46 @@ server <- function(input, output, session) {
     )
   })
 
+  tt_plotly_empty <- function(sub = "Adjust year ranges or era filters.") {
+    msg <- paste(as.character(sub), collapse = " ")
+    if (!nzchar(msg)) {
+      msg <- "Adjust year ranges or era filters."
+    }
+    plotly::plot_ly(
+      type = "scatter",
+      mode = "markers",
+      x = 0,
+      y = 0,
+      marker = list(size = 3, opacity = 0),
+      showlegend = FALSE,
+      hoverinfo = "skip"
+    ) |>
+      plotly::layout(
+        annotations = list(
+          list(
+            text = msg,
+            xref = "paper",
+            yref = "paper",
+            x = 0.5,
+            y = 0.5,
+            showarrow = FALSE,
+            font = list(size = 13, color = "#64748b")
+          )
+        ),
+        xaxis = list(visible = FALSE, range = c(-1, 1)),
+        yaxis = list(visible = FALSE, range = c(-1, 1))
+      )
+  }
+
   output$tt_summary_md <- renderUI({
     a <- tt_analysis()
+    if (!isTRUE(a$ok)) {
+      return(
+        card_body(
+          tags$p(class = "text-muted mb-0", if (is.character(a$err)) a$err else "Cannot run comparison.")
+        )
+      )
+    }
     tt <- a$tt
     est <- as.numeric(tt$estimate[[1L]])
     ci_lo <- as.numeric(tt$conf.int[[1L]])
@@ -2463,6 +2511,9 @@ server <- function(input, output, session) {
 
   output$plt_tt_violin <- renderPlotly({
     a <- tt_analysis()
+    if (!isTRUE(a$ok)) {
+      return(tt_plotly_empty(a$err))
+    }
     yc <- as.character(a$y_col)[[1L]]
     yl <- switch(
       yc,
@@ -2484,6 +2535,9 @@ server <- function(input, output, session) {
 
   output$plt_tt_density <- renderPlotly({
     a <- tt_analysis()
+    if (!isTRUE(a$ok)) {
+      return(tt_plotly_empty(a$err))
+    }
     yc <- as.character(a$y_col)[[1L]]
     yl <- switch(
       yc,
@@ -2503,6 +2557,9 @@ server <- function(input, output, session) {
 
   output$plt_tt_meanci <- renderPlotly({
     a <- tt_analysis()
+    if (!isTRUE(a$ok)) {
+      return(tt_plotly_empty(a$err))
+    }
     m <- a$mns
     g <- ggplot(m, aes(x = period, y = mean, fill = period)) +
       geom_col(alpha = 0.85, width = 0.55) +
